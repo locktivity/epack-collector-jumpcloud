@@ -1,0 +1,13 @@
+version: 1
+env:
+  - CGO_ENABLED=0
+  - VERSION={{ .Env.VERSION }}
+  - COMMIT={{ .Env.COMMIT }}
+goos: darwin
+goarch: amd64
+main: ./cmd/epack-collector-jumpcloud
+binary: epack-collector-jumpcloud-darwin-amd64
+flags:
+  - -trimpath
+ldflags:
+  - "-s -w -X main.Version={{ .Env.VERSION }} -X main.Commit={{ .Env.COMMIT }}"
