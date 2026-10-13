@@ -1,6 +1,9 @@
 package jumpcloud
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // SystemUser represents a user from the V1 /api/systemusers endpoint.
 type SystemUser struct {
@@ -34,6 +37,29 @@ type MFAEnrollment struct {
 	TOTPStatus     string `json:"totpStatus"`
 	WebAuthnStatus string `json:"webAuthnStatus"`
 	PushStatus     string `json:"pushStatus"`
+	SMSStatus      string `json:"smsStatus"`
+	JCGoStatus     string `json:"jcGoStatus"`
+}
+
+// HasAnyMFA returns true when the user has at least one MFA method enrolled.
+func (e *MFAEnrollment) HasAnyMFA() bool {
+	if e == nil {
+		return false
+	}
+	return e.TOTPStatus == "ENROLLED" ||
+		e.WebAuthnStatus == "ENROLLED" ||
+		e.PushStatus == "ENROLLED" ||
+		e.SMSStatus == "ENROLLED" ||
+		e.JCGoStatus == "ENROLLED"
+}
+
+// HasPhishingResistantMFA returns true when the user has a phishing-resistant
+// method (WebAuthn/FIDO2) enrolled.
+func (e *MFAEnrollment) HasPhishingResistantMFA() bool {
+	if e == nil {
+		return false
+	}
+	return e.WebAuthnStatus == "ENROLLED"
 }
 
 // Application represents an SSO application from the V1 /api/applications endpoint.
@@ -46,9 +72,6 @@ type Application struct {
 }
 
 // ApplicationSSO holds SSO configuration for an application.
-// Note: the presence of sso.type indicates SSO is configured. The "active"
-// field may not be present in all JumpCloud API versions; callers should
-// treat a non-empty sso.type as evidence of SSO enablement.
 type ApplicationSSO struct {
 	Type string `json:"type"`
 }
@@ -87,21 +110,33 @@ type System struct {
 	MDM          *SystemMDM `json:"mdm"`
 }
 
-// SystemMDM holds MDM enrollment info for a system.
+// SystemMDM holds MDM enrollment info for a system. The shape varies by
+// platform: macOS/iOS uses internal.deviceId, Windows uses
+// internal.windowsDeviceId, and third-party MDMs populate vendor fields.
 type SystemMDM struct {
+	Vendor   string       `json:"vendor"`
 	Internal *MDMInternal `json:"internal"`
 }
 
-// MDMInternal holds internal MDM fields.
+// MDMInternal holds internal MDM device IDs.
 type MDMInternal struct {
-	DeviceID string `json:"deviceId"`
+	DeviceID        string `json:"deviceId"`
+	WindowsDeviceID string `json:"windowsDeviceId"`
 }
 
-// HasMDM returns true when the system has MDM enrollment evidence.
-// Since the documented MDM shape may vary, we check for the presence of
-// the internal deviceId as evidence of enrollment.
+// HasMDM returns true when the system shows evidence of MDM enrollment
+// across any supported platform or vendor.
 func (s *System) HasMDM() bool {
-	return s.MDM != nil && s.MDM.Internal != nil && s.MDM.Internal.DeviceID != ""
+	if s.MDM == nil {
+		return false
+	}
+	if s.MDM.Vendor != "" {
+		return true
+	}
+	if s.MDM.Internal == nil {
+		return false
+	}
+	return s.MDM.Internal.DeviceID != "" || s.MDM.Internal.WindowsDeviceID != ""
 }
 
 // UserGroup represents a user group from the V2 API.
@@ -121,12 +156,12 @@ type SystemGroup struct {
 // AuthPolicy represents an authentication policy from the V2 authn/policies
 // endpoint. The response is a bare array (not wrapped in {results}).
 type AuthPolicy struct {
-	ID         string             `json:"id"`
-	Name       string             `json:"name"`
-	Disabled   bool               `json:"disabled"`
-	Type       string             `json:"type"`
-	Effect     *AuthPolicyEffect  `json:"effect"`
-	Conditions *AuthPolicyConditions `json:"conditions"`
+	ID         string            `json:"id"`
+	Name       string            `json:"name"`
+	Disabled   bool              `json:"disabled"`
+	Type       string            `json:"type"`
+	Effect     *AuthPolicyEffect `json:"effect"`
+	Conditions json.RawMessage   `json:"conditions"`
 }
 
 // AuthPolicyEffect holds the effect/obligations of an auth policy.
@@ -137,8 +172,8 @@ type AuthPolicyEffect struct {
 
 // PolicyObligations holds MFA and other requirements.
 type PolicyObligations struct {
-	MFA        *PolicyMFA        `json:"mfa"`
-	MFAFactors []MFAFactorEntry  `json:"mfaFactors"`
+	MFA              *PolicyMFA       `json:"mfa"`
+	MFAFactors       []MFAFactorEntry `json:"mfaFactors"`
 	UserVerification *UserVerification `json:"userVerification"`
 }
 
@@ -158,28 +193,60 @@ type UserVerification struct {
 	Requirement string `json:"requirement"`
 }
 
-// AuthPolicyConditions holds conditions for policy evaluation.
-type AuthPolicyConditions struct {
-	DeviceManaged *BoolCondition `json:"deviceManaged"`
-	IPAddress     *IPAddressCondition `json:"ipAddress"`
+// ConditionHasDeviceManaged inspects the raw conditions JSON for a
+// deviceManaged condition. The actual API uses a boolean value directly
+// (e.g. {"deviceManaged":true}), but conditions can also be nested inside
+// all/any/not expressions. This performs a best-effort check: it returns
+// true when deviceManaged appears as a top-level boolean or anywhere in
+// the condition tree, and false when conditions are absent or unparseable.
+func (p *AuthPolicy) ConditionHasDeviceManaged() bool {
+	if len(p.Conditions) == 0 {
+		return false
+	}
+	return rawContainsDeviceManaged(p.Conditions)
 }
 
-// BoolCondition is a generic boolean condition.
-type BoolCondition struct {
-	Value bool `json:"value"`
-}
+func rawContainsDeviceManaged(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return false
+	}
 
-// IPAddressCondition holds network-based conditions.
-type IPAddressCondition struct {
-	TrustedOnly bool `json:"trustedOnly"`
+	if dm, ok := obj["deviceManaged"]; ok {
+		var v bool
+		if json.Unmarshal(dm, &v) == nil && v {
+			return true
+		}
+	}
+
+	for _, key := range []string{"all", "any"} {
+		if sub, ok := obj[key]; ok {
+			var items []json.RawMessage
+			if json.Unmarshal(sub, &items) == nil {
+				for _, item := range items {
+					if rawContainsDeviceManaged(item) {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	if notRaw, ok := obj["not"]; ok {
+		if rawContainsDeviceManaged(notRaw) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // DirectoryInsightsEvent represents a single event from the Directory Insights API.
 type DirectoryInsightsEvent struct {
-	ID        string      `json:"id"`
-	EventType string      `json:"event_type"`
-	Service   string      `json:"service"`
-	Timestamp string      `json:"timestamp"`
+	ID          string      `json:"id"`
+	EventType   string      `json:"event_type"`
+	Service     string      `json:"service"`
+	Timestamp   string      `json:"timestamp"`
 	InitiatedBy *EventActor `json:"initiated_by"`
 }
 

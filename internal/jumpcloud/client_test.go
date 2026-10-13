@@ -22,7 +22,7 @@ func testServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *Clie
 
 func jsonResponse(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func TestClient_AuthHeaders(t *testing.T) {
@@ -166,7 +166,7 @@ func TestClient_QueryEvents_InsightsHost(t *testing.T) {
 func TestClient_ErrorUnauthorized(t *testing.T) {
 	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"message":"Unauthorized"}`))
+		_, _ = w.Write([]byte(`{"message":"Unauthorized"}`))
 	})
 
 	_, _, err := client.ListSystemUsers(context.Background())
@@ -188,7 +188,7 @@ func TestClient_RetryOn429(t *testing.T) {
 		attempts++
 		if attempts < 3 {
 			w.WriteHeader(http.StatusTooManyRequests)
-			w.Write([]byte(`rate limited`))
+			_, _ = w.Write([]byte(`rate limited`))
 			return
 		}
 		jsonResponse(w, map[string]any{"totalCount": 0, "results": []any{}})
@@ -209,7 +209,7 @@ func TestClient_NoRetryOn400(t *testing.T) {
 	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`bad request`))
+		_, _ = w.Write([]byte(`bad request`))
 	})
 	client.retryDelay = func(int) time.Duration { return time.Millisecond }
 

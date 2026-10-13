@@ -10,9 +10,7 @@ type IDPPosture struct {
 	UserSecurity     IDPPostureUserSecurity      `json:"user_security"`
 	AppSecurity      *IDPPostureAppSecurity      `json:"app_security,omitempty"`
 	PrivilegedAccess *IDPPosturePrivilegedAccess `json:"privileged_access,omitempty"`
-	Policy           *IDPPosturePolicy           `json:"policy,omitempty"`
 	Lifecycle        *IDPPostureLifecycle        `json:"lifecycle,omitempty"`
-	DeviceAccess     *IDPPostureDeviceAccess     `json:"device_access,omitempty"`
 }
 
 // IDPPostureUserSecurity contains user security metrics.
@@ -34,21 +32,9 @@ type IDPPosturePrivilegedAccess struct {
 	PrivilegedMFACoveragePct *float64 `json:"privileged_mfa_coverage_pct,omitempty"`
 }
 
-// IDPPosturePolicy contains aggregated policy settings.
-// Fields are only populated when policy data was successfully collected.
-type IDPPosturePolicy struct {
-	MFARequired                            bool  `json:"mfa_required"`
-	PhishingResistantRequiredForPrivileged *bool `json:"phishing_resistant_required_for_privileged,omitempty"`
-}
-
 // IDPPostureLifecycle contains account lifecycle posture metrics.
 type IDPPostureLifecycle struct {
 	SuspendedPct *float64 `json:"suspended_pct,omitempty"`
-}
-
-// IDPPostureDeviceAccess contains managed-device posture.
-type IDPPostureDeviceAccess struct {
-	ManagedDeviceRequired *bool `json:"managed_device_required,omitempty"`
 }
 
 // ToIDPPosture transforms the JumpCloud-specific posture into the shared
@@ -57,13 +43,20 @@ type IDPPostureDeviceAccess struct {
 // Returns nil when there are no users, because all percentages would be
 // zero and indistinguishable from genuinely poor posture.
 //
-// Sections that depend on optional surfaces (Apps, Admins, Policies, Devices)
-// are only emitted when the corresponding data was successfully collected.
-// Unavailable sections are omitted rather than defaulted to zero, so
-// consumers do not mistake missing data for a definite posture reading.
+// Sections that depend on optional surfaces (Apps, Admins) are only emitted
+// when the corresponding data was successfully collected and is complete.
+// Unavailable or partial sections are omitted rather than published with
+// potentially misleading values.
 //
-// Note: inactive_pct is not emitted because the collector does not yet
-// measure user login activity timestamps.
+// Fields we deliberately omit:
+//   - inactive_pct: the collector does not yet measure login activity
+//   - policy: the collector observes policy configuration, not effective
+//     enforcement. Publishing policy presence as normalized enforcement
+//     claims (mfa_required, phishing_resistant_required_for_privileged,
+//     managed_device_required) would overstate what the data proves.
+//     Policy configuration is available in the detailed artifact.
+//   - device_access: same rationale as policy; a device-managed condition
+//     on a policy does not establish a global device requirement.
 func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 	if o.Users.Total == 0 {
 		return nil
@@ -86,42 +79,25 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 		},
 	}
 
-	if o.Apps != nil && o.Apps.TotalApps > 0 {
+	// Only emit when user discovery was complete; partial user lists
+	// would distort the percentages.
+	if o.Users.Partial {
+		return posture
+	}
+
+	if o.Apps != nil && o.Apps.TotalApps > 0 && !o.Apps.Partial {
 		ssoPct := o.Apps.SSOCoveragePct
 		posture.AppSecurity = &IDPPostureAppSecurity{
 			SSOCoveragePct: &ssoPct,
 		}
 	}
 
-	if o.Admins != nil && o.Admins.TotalAdmins > 0 {
+	if o.Admins != nil && o.Admins.TotalAdmins > 0 && !o.Admins.Partial {
 		adminMFAPct := o.Admins.AdminMFACoveragePct
 		posture.PrivilegedAccess = &IDPPosturePrivilegedAccess{
 			PrivilegedUsersCount:     o.Admins.TotalAdmins,
 			SuperAdminCount:          o.Admins.SuperAdminCount,
 			PrivilegedMFACoveragePct: &adminMFAPct,
-		}
-	}
-
-	// Only emit policy section when policies were successfully collected.
-	// HasMFARequiredPolicy describes policy configuration, not effective
-	// enforcement. A policy may target a subset of users.
-	if o.Policies != nil {
-		policy := &IDPPosturePolicy{
-			MFARequired: o.Policies.HasMFARequiredPolicy,
-		}
-		if o.Policies.HasPhishingResistantAdminPolicy {
-			v := true
-			policy.PhishingResistantRequiredForPrivileged = &v
-		}
-		posture.Policy = policy
-	}
-
-	// Only emit device access when we have both policy and device data
-	// confirming a managed-device condition exists.
-	if o.Policies != nil && o.Policies.HasDeviceManagedCondition {
-		v := true
-		posture.DeviceAccess = &IDPPostureDeviceAccess{
-			ManagedDeviceRequired: &v,
 		}
 	}
 

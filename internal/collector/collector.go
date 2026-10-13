@@ -27,36 +27,38 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 		return nil, err
 	}
 
-	partial := len(users) < serverUserTotal
+	userPartial := len(users) < serverUserTotal
 
 	posture := &OrgPosture{
 		SchemaVersion:    SchemaVersion,
 		CollectedAt:      now.Format(time.RFC3339),
 		CollectedAtLevel: string(level),
-		Users:            computeUserMetrics(users, partial),
+		Users:            computeUserMetrics(users, userPartial),
 		Authentication:   computeAuthMetrics(users),
 	}
 
 	c.status("Fetching applications")
-	apps, _, appErr := c.client.ListApplications(ctx)
+	apps, serverAppTotal, appErr := c.client.ListApplications(ctx)
 	if appErr != nil {
 		if isFatal(appErr) {
 			return nil, appErr
 		}
 		recordSurfaceError(diag, "applications", appErr)
 	} else {
-		posture.Apps = computeAppMetrics(apps)
+		appPartial := len(apps) < serverAppTotal
+		posture.Apps = computeAppMetrics(apps, appPartial)
 	}
 
 	c.status("Fetching administrators")
-	admins, _, adminErr := c.client.ListAdministrators(ctx)
+	admins, serverAdminTotal, adminErr := c.client.ListAdministrators(ctx)
 	if adminErr != nil {
 		if isFatal(adminErr) {
 			return nil, adminErr
 		}
 		recordSurfaceError(diag, "administrators", adminErr)
 	} else {
-		posture.Admins = computeAdminMetrics(admins)
+		adminPartial := len(admins) < serverAdminTotal
+		posture.Admins = computeAdminMetrics(admins, adminPartial)
 	}
 
 	c.status("Fetching authentication policies")
@@ -84,6 +86,9 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 
 	org, orgErr := c.client.GetOrganization(ctx)
 	if orgErr != nil {
+		if isFatal(orgErr) {
+			return nil, orgErr
+		}
 		if !isDenied(orgErr) && !errors.Is(orgErr, jumpcloud.ErrNotFound) {
 			diag.surfaceWarning("organization", safeDiagError(orgErr))
 		}
@@ -200,17 +205,17 @@ func computeAuthMetrics(users []jumpcloud.SystemUser) AuthenticationMetrics {
 
 		hasMFA := false
 		if u.MFAEnrollment != nil {
+			if u.MFAEnrollment.HasAnyMFA() {
+				hasMFA = true
+			}
 			if u.MFAEnrollment.TOTPStatus == "ENROLLED" {
 				totpCount++
-				hasMFA = true
 			}
 			if u.MFAEnrollment.WebAuthnStatus == "ENROLLED" {
 				webauthnCount++
-				hasMFA = true
 			}
 			if u.MFAEnrollment.PushStatus == "ENROLLED" {
 				pushCount++
-				hasMFA = true
 			}
 		} else if u.TOTPEnabled {
 			totpCount++
@@ -239,7 +244,7 @@ func computeAuthMetrics(users []jumpcloud.SystemUser) AuthenticationMetrics {
 	}
 }
 
-func computeAdminMetrics(admins []jumpcloud.Administrator) *AdminMetrics {
+func computeAdminMetrics(admins []jumpcloud.Administrator, partial bool) *AdminMetrics {
 	if len(admins) == 0 {
 		return &AdminMetrics{}
 	}
@@ -257,17 +262,24 @@ func computeAdminMetrics(admins []jumpcloud.Administrator) *AdminMetrics {
 		TotalAdmins:         len(admins),
 		SuperAdminCount:     superCount,
 		AdminMFACoveragePct: pct(mfaCount, len(admins)),
+		Partial:             partial,
 	}
 }
 
-// isSuperAdmin returns true for role names that indicate full administrative
-// access. JumpCloud uses "Administrator" (vs "Administrator With Billing",
-// "Help Desk", "Read Only", etc.). We only count the unrestricted role.
+// isSuperAdmin returns true for role names that indicate the highest level of
+// administrative access. JumpCloud's "Administrator With Billing" role has
+// unrestricted access including billing; the plain "Administrator" role lacks
+// billing but has full directory control. Both are counted as super-admin.
 func isSuperAdmin(roleName string) bool {
-	return roleName == "Administrator"
+	switch roleName {
+	case "Administrator With Billing", "Administrator":
+		return true
+	default:
+		return false
+	}
 }
 
-func computeAppMetrics(apps []jumpcloud.Application) *AppMetrics {
+func computeAppMetrics(apps []jumpcloud.Application, partial bool) *AppMetrics {
 	if len(apps) == 0 {
 		return &AppMetrics{}
 	}
@@ -281,13 +293,15 @@ func computeAppMetrics(apps []jumpcloud.Application) *AppMetrics {
 		TotalApps:      len(apps),
 		SSOEnabledApps: ssoCount,
 		SSOCoveragePct: pct(ssoCount, len(apps)),
+		Partial:        partial,
 	}
 }
 
 // computePolicyMetrics summarizes policy configuration. These metrics describe
 // what policies exist, not what is effectively enforced. A policy that requires
 // MFA for a subset of users is counted as "has MFA-required policy" but does
-// not imply org-wide MFA enforcement.
+// not imply org-wide MFA enforcement. The normalized artifact does not carry
+// these as enforcement claims.
 func computePolicyMetrics(policies []jumpcloud.AuthPolicy) *PolicyMetrics {
 	m := &PolicyMetrics{TotalPolicies: len(policies)}
 	for _, p := range policies {
@@ -304,7 +318,7 @@ func computePolicyMetrics(policies []jumpcloud.AuthPolicy) *PolicyMetrics {
 				}
 			}
 		}
-		if p.Conditions != nil && p.Conditions.DeviceManaged != nil && p.Conditions.DeviceManaged.Value {
+		if p.ConditionHasDeviceManaged() {
 			m.HasDeviceManagedCondition = true
 		}
 	}
@@ -362,7 +376,7 @@ func buildUserInventory(users []jumpcloud.SystemUser) *UserInventory {
 			Created:       u.Created,
 		}
 		if u.MFAEnrollment != nil {
-			row.MFAEnrolled = u.MFAEnrollment.OverallStatus == "ENROLLED"
+			row.MFAEnrolled = u.MFAEnrollment.HasAnyMFA()
 			row.WebAuthnEnabled = u.MFAEnrollment.WebAuthnStatus == "ENROLLED"
 			if u.MFAEnrollment.TOTPStatus == "ENROLLED" {
 				row.TOTPEnabled = true
@@ -427,9 +441,10 @@ func buildPolicyInventory(policies []jumpcloud.AuthPolicy) *PolicyInventory {
 	rows := make([]AuthPolicyRow, 0, len(policies))
 	for _, p := range policies {
 		row := AuthPolicyRow{
-			Name:     p.Name,
-			Type:     p.Type,
-			Disabled: p.Disabled,
+			Name:          p.Name,
+			Type:          p.Type,
+			Disabled:      p.Disabled,
+			DeviceManaged: p.ConditionHasDeviceManaged(),
 		}
 		if p.Effect != nil && p.Effect.Obligations != nil {
 			if p.Effect.Obligations.MFA != nil {
@@ -438,9 +453,6 @@ func buildPolicyInventory(policies []jumpcloud.AuthPolicy) *PolicyInventory {
 			for _, f := range p.Effect.Obligations.MFAFactors {
 				row.AllowedFactors = append(row.AllowedFactors, f.Type)
 			}
-		}
-		if p.Conditions != nil && p.Conditions.DeviceManaged != nil {
-			row.DeviceManaged = p.Conditions.DeviceManaged.Value
 		}
 		rows = append(rows, row)
 	}

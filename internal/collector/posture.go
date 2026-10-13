@@ -57,6 +57,7 @@ type AdminMetrics struct {
 	TotalAdmins         int     `json:"total_admins"`
 	SuperAdminCount     int     `json:"super_admin_count"`
 	AdminMFACoveragePct float64 `json:"admin_mfa_coverage_pct"`
+	Partial             bool    `json:"partial,omitempty"`
 }
 
 // AppMetrics contains SSO application metrics.
@@ -64,6 +65,7 @@ type AppMetrics struct {
 	TotalApps      int     `json:"total_apps"`
 	SSOEnabledApps int     `json:"sso_enabled_apps"`
 	SSOCoveragePct float64 `json:"sso_coverage_pct"`
+	Partial        bool    `json:"partial,omitempty"`
 }
 
 // PolicyMetrics contains authentication policy summary.
