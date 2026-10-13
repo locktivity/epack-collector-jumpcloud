@@ -4,26 +4,47 @@ Collects JumpCloud identity, access, and device posture metrics for evidence pac
 
 ## What it collects
 
-Two artifacts are emitted on every run:
+Every run emits one detailed artifact:
 
-1. `artifacts/jumpcloud.json`: detailed JumpCloud-specific posture
-2. `artifacts/jumpcloud.idp-posture.json`: normalized `evidencepack/idp-posture@v1` posture
+- `artifacts/jumpcloud.json`: JumpCloud-specific posture
+
+When user discovery is complete (not capped), a second normalized artifact is also emitted:
+
+- `artifacts/jumpcloud.idp-posture.json`: normalized `evidencepack/idp-posture@v1` posture
+
+The normalized artifact is omitted when user discovery is incomplete or there are no users, because percentages computed from a partial population would misrepresent actual coverage.
 
 ### Collection levels
+
+Set the collection level in your pipeline configuration. This controls what data is gathered and how much detail is disclosed.
 
 | Surface | Trust | Audit | Internal |
 |---------|-------|-------|----------|
 | User counts and MFA adoption percentages | Yes | Yes | Yes |
 | Admin counts and admin MFA coverage | Yes | Yes | Yes |
 | SSO app counts and coverage | Yes | Yes | Yes |
-| Authentication policy summary (MFA required, device trust) | Yes | Yes | Yes |
+| Authentication policy configuration summary | Yes | Yes | Yes |
 | Device/system counts, OS breakdown, MDM enrollment | Yes | Yes | Yes |
 | Per-user inventory (username, email, state, MFA status) | | Yes | Yes |
-| Per-app inventory (name, SSO type, active) | | Yes | Yes |
+| Per-app inventory (name, SSO type) | | Yes | Yes |
 | User and system group inventory | | Yes | Yes |
 | Per-device inventory (hostname, OS, agent, MDM) | | Yes | Yes |
-| Per-policy inventory (name, type, MFA factors, device trust) | | Yes | Yes |
-| 7-day Directory Insights audit events | | | Yes |
+| Per-policy inventory (name, type, MFA factors, conditions) | | Yes | Yes |
+| Directory Insights audit events (7-day window) | | | Yes |
+
+### What it does not measure
+
+- **Login activity / inactivity**: the collector does not query per-user login timestamps, so `inactive_pct` is not emitted in the normalized artifact.
+- **Effective policy enforcement**: the detailed artifact describes policy *configuration* (which policies exist, what they require). It does not evaluate effective enforcement across targets, monitoring mode, or fallback behavior. The normalized artifact omits policy and device-access claims for this reason.
+- **Complete event history**: audit event counts at the internal level summarize the fetched sample (capped at 5,000 rows). They are not necessarily complete seven-day totals.
+
+### Incomplete discovery
+
+Each paginated API surface has an internal safety cap (50,000 rows). When discovery is capped:
+
+- V1 surfaces (users, apps, admins, systems) report `partial: true` in their metrics and the server-reported total is preserved where available.
+- V2 surfaces (groups, policies) emit a diagnostic warning when capped.
+- The normalized artifact is omitted entirely when user discovery is partial.
 
 ## Quick start
 
@@ -40,24 +61,37 @@ collectors:
 
 | Key | Required | Description |
 |-----|----------|-------------|
-| `org_id` | No | JumpCloud organization ID. Required only for MSP/multi-tenant setups. |
+| `org_id` | No | JumpCloud organization ID (string). Required for MSP/multi-tenant setups where the API key has access to multiple organizations. Must be a string; a non-string value is rejected. |
+
+When `org_id` is set, the collector validates it against the organization list. When unset and the API key returns multiple organizations, collection fails with a clear error.
 
 ## Authentication
 
-Set `JUMPCLOUD_API_KEY` to a JumpCloud API key (prefixed `jca_`).
+Set `JUMPCLOUD_API_KEY` to a JumpCloud API key.
 
 Generate one in the JumpCloud Admin Portal under your username > API Settings.
 
 ### Required permissions
 
 The API key needs read access to:
-- System users
-- Applications
-- Administrators
-- Systems
-- User groups / System groups
-- Authentication policies
-- Directory Insights events (internal level only)
+- System users (`/api/systemusers`)
+- Applications (`/api/applications`)
+- Organizations (`/api/organizations`)
+- Administrators (`/api/administrators`)
+- Systems (`/api/systems`)
+- User groups and system groups (`/api/v2/usergroups`, `/api/v2/systemgroups`)
+- Authentication policies (`/api/v2/authn/policies`)
+- Directory Insights events at internal level (`/insights/directory/v1/events` on `api.jumpcloud.com`)
+
+Surfaces that return 403 degrade gracefully: that section is omitted and a diagnostic is recorded. A 401 from any surface is fatal.
+
+### Service hosts
+
+The collector contacts two JumpCloud API hosts:
+- `console.jumpcloud.com` for V1/V2 management APIs
+- `api.jumpcloud.com` for Directory Insights
+
+Regional endpoints are not currently supported.
 
 ## Development
 

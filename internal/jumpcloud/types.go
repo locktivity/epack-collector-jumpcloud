@@ -125,18 +125,31 @@ type MDMInternal struct {
 }
 
 // HasMDM returns true when the system shows evidence of MDM enrollment
-// across any supported platform or vendor.
+// across any supported platform or vendor. Vendor values "none" and
+// "unknown" do not constitute enrollment evidence.
 func (s *System) HasMDM() bool {
 	if s.MDM == nil {
 		return false
 	}
-	if s.MDM.Vendor != "" {
+	if isEnrolledVendor(s.MDM.Vendor) {
 		return true
 	}
 	if s.MDM.Internal == nil {
 		return false
 	}
 	return s.MDM.Internal.DeviceID != "" || s.MDM.Internal.WindowsDeviceID != ""
+}
+
+// isEnrolledVendor returns true for vendor values that indicate actual
+// MDM management. The documented enum includes "none", "unknown",
+// "internal", and "external"; only the latter two prove enrollment.
+func isEnrolledVendor(vendor string) bool {
+	switch vendor {
+	case "internal", "external":
+		return true
+	default:
+		return false
+	}
 }
 
 // UserGroup represents a user group from the V2 API.

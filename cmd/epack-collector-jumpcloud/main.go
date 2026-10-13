@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/locktivity/epack-collector-jumpcloud/internal/collector"
 	"github.com/locktivity/epack-collector-jumpcloud/internal/jumpcloud"
@@ -25,8 +26,13 @@ func main() {
 func run(ctx componentsdk.CollectorContext) error {
 	cfg := ctx.Config()
 
+	orgID, err := getOptionalString(cfg, "org_id")
+	if err != nil {
+		return componentsdk.NewConfigError("org_id: %s", err)
+	}
+
 	config := collector.Config{
-		OrgID:    getString(cfg, "org_id"),
+		OrgID:    orgID,
 		OnStatus: ctx.Status,
 	}
 
@@ -61,19 +67,49 @@ func run(ctx componentsdk.CollectorContext) error {
 	return ctx.Emit(artifacts)
 }
 
+// classifyError maps collection errors to SDK error types using sanitized
+// messages. Response bodies are not included to avoid leaking untrusted
+// API content to logs.
 func classifyError(err error) error {
 	if errors.Is(err, jumpcloud.ErrUnauthorized) {
-		return componentsdk.NewAuthError("unauthorized: %v", err)
+		return componentsdk.NewAuthError("JumpCloud API key is unauthorized")
 	}
-	return componentsdk.NewNetworkError("collecting posture: %v", err)
+	if errors.Is(err, jumpcloud.ErrPermissionDenied) {
+		return componentsdk.NewAuthError("JumpCloud API key lacks required permissions")
+	}
+
+	var apiErr *jumpcloud.APIError
+	if errors.As(err, &apiErr) {
+		return componentsdk.NewNetworkError("JumpCloud API returned HTTP %d", apiErr.StatusCode)
+	}
+
+	return componentsdk.NewNetworkError("collection failed: %v", sanitizeErrorMessage(err))
 }
 
-func getString(cfg map[string]any, key string) string {
+// sanitizeErrorMessage returns a safe error description that does not include
+// response bodies or credential-bearing URLs.
+func sanitizeErrorMessage(err error) string {
+	var apiErr *jumpcloud.APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Sprintf("HTTP %d", apiErr.StatusCode)
+	}
+	return err.Error()
+}
+
+// getOptionalString extracts a string config value, returning an error if
+// the key exists but is not a string (e.g. a numeric org_id would silently
+// drop tenant selection).
+func getOptionalString(cfg map[string]any, key string) (string, error) {
 	if cfg == nil {
-		return ""
+		return "", nil
 	}
-	if v, ok := cfg[key].(string); ok {
-		return v
+	raw, exists := cfg[key]
+	if !exists || raw == nil {
+		return "", nil
 	}
-	return ""
+	v, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("must be a string, got %T", raw)
+	}
+	return v, nil
 }

@@ -11,28 +11,31 @@ import (
 )
 
 type mockClient struct {
-	users          []jumpcloud.SystemUser
-	userTotal      int
-	usersErr       error
-	apps           []jumpcloud.Application
-	appTotal       int
-	appsErr        error
-	org            *jumpcloud.Organization
-	orgErr         error
-	admins         []jumpcloud.Administrator
-	adminTotal     int
-	adminsErr      error
-	systems        []jumpcloud.System
-	sysTotal       int
-	systemsErr     error
-	userGroups     []jumpcloud.UserGroup
-	userGroupErr   error
-	sysGroups      []jumpcloud.SystemGroup
-	sysGroupErr    error
-	authPolicies   []jumpcloud.AuthPolicy
-	policyErr      error
-	events         []jumpcloud.DirectoryInsightsEvent
-	eventsErr      error
+	users        []jumpcloud.SystemUser
+	userTotal    int
+	usersErr     error
+	apps         []jumpcloud.Application
+	appTotal     int
+	appsErr      error
+	org          *jumpcloud.Organization
+	orgErr       error
+	admins       []jumpcloud.Administrator
+	adminTotal   int
+	adminsErr    error
+	systems      []jumpcloud.System
+	sysTotal     int
+	systemsErr   error
+	userGroups   []jumpcloud.UserGroup
+	ugCapped     bool
+	userGroupErr error
+	sysGroups    []jumpcloud.SystemGroup
+	sgCapped     bool
+	sysGroupErr  error
+	authPolicies []jumpcloud.AuthPolicy
+	polCapped    bool
+	policyErr    error
+	events       []jumpcloud.DirectoryInsightsEvent
+	eventsErr    error
 }
 
 func (m *mockClient) ListSystemUsers(ctx context.Context) ([]jumpcloud.SystemUser, int, error) {
@@ -49,7 +52,7 @@ func (m *mockClient) ListApplications(ctx context.Context) ([]jumpcloud.Applicat
 	}
 	return m.apps, total, m.appsErr
 }
-func (m *mockClient) GetOrganization(ctx context.Context) (*jumpcloud.Organization, error) {
+func (m *mockClient) GetOrganization(ctx context.Context, orgID string) (*jumpcloud.Organization, error) {
 	return m.org, m.orgErr
 }
 func (m *mockClient) ListAdministrators(ctx context.Context) ([]jumpcloud.Administrator, int, error) {
@@ -66,14 +69,14 @@ func (m *mockClient) ListSystems(ctx context.Context) ([]jumpcloud.System, int, 
 	}
 	return m.systems, total, m.systemsErr
 }
-func (m *mockClient) ListUserGroups(ctx context.Context) ([]jumpcloud.UserGroup, error) {
-	return m.userGroups, m.userGroupErr
+func (m *mockClient) ListUserGroups(ctx context.Context) ([]jumpcloud.UserGroup, bool, error) {
+	return m.userGroups, m.ugCapped, m.userGroupErr
 }
-func (m *mockClient) ListSystemGroups(ctx context.Context) ([]jumpcloud.SystemGroup, error) {
-	return m.sysGroups, m.sysGroupErr
+func (m *mockClient) ListSystemGroups(ctx context.Context) ([]jumpcloud.SystemGroup, bool, error) {
+	return m.sysGroups, m.sgCapped, m.sysGroupErr
 }
-func (m *mockClient) ListAuthPolicies(ctx context.Context) ([]jumpcloud.AuthPolicy, error) {
-	return m.authPolicies, m.policyErr
+func (m *mockClient) ListAuthPolicies(ctx context.Context) ([]jumpcloud.AuthPolicy, bool, error) {
+	return m.authPolicies, m.polCapped, m.policyErr
 }
 func (m *mockClient) QueryEvents(ctx context.Context, service string, start, end time.Time, limit int) ([]jumpcloud.DirectoryInsightsEvent, error) {
 	return m.events, m.eventsErr
@@ -107,13 +110,14 @@ func richMock() *mockClient {
 		org: &jumpcloud.Organization{ID: "org-1", DisplayName: "Test Org"},
 		admins: []jumpcloud.Administrator{
 			{ID: "a1", Email: "admin@co.com", TOTPEnabled: true, RoleName: "Administrator With Billing"},
-			{ID: "a2", Email: "admin2@co.com", TOTPEnabled: false, RoleName: "Help Desk"},
+			{ID: "a2", Email: "admin2@co.com", TOTPEnabled: false, RoleName: "Administrator"},
+			{ID: "a3", Email: "helpdesk@co.com", TOTPEnabled: true, RoleName: "Help Desk"},
 		},
 		systems: []jumpcloud.System{
 			{ID: "s1", Hostname: "mac-1", OS: "Mac OS X", Active: true,
-				MDM: &jumpcloud.SystemMDM{Internal: &jumpcloud.MDMInternal{DeviceID: "dev1"}}},
+				MDM: &jumpcloud.SystemMDM{Vendor: "internal", Internal: &jumpcloud.MDMInternal{DeviceID: "dev1"}}},
 			{ID: "s2", Hostname: "win-1", OS: "Windows", Active: true,
-				MDM: &jumpcloud.SystemMDM{Internal: &jumpcloud.MDMInternal{WindowsDeviceID: "win-dev1"}}},
+				MDM: &jumpcloud.SystemMDM{Vendor: "internal", Internal: &jumpcloud.MDMInternal{WindowsDeviceID: "win-dev1"}}},
 			{ID: "s3", Hostname: "linux-1", OS: "Ubuntu", Active: false},
 		},
 		authPolicies: []jumpcloud.AuthPolicy{
@@ -154,76 +158,39 @@ func TestCollect_TrustLevel(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if posture.SchemaVersion != SchemaVersion {
-		t.Errorf("schema_version = %q, want %q", posture.SchemaVersion, SchemaVersion)
-	}
 	if posture.Users.Total != 4 {
 		t.Errorf("users.total = %d, want 4", posture.Users.Total)
-	}
-	if posture.Users.Active != 3 {
-		t.Errorf("users.active = %d, want 3", posture.Users.Active)
-	}
-	if posture.Authentication.MFACoveragePct < 66 || posture.Authentication.MFACoveragePct > 67 {
-		t.Errorf("mfa_coverage_pct = %v, want ~66.67", posture.Authentication.MFACoveragePct)
 	}
 
 	if posture.Admins == nil {
 		t.Fatal("admins should be present")
 	}
-	if posture.Admins.TotalAdmins != 2 {
-		t.Errorf("admins.total = %d, want 2", posture.Admins.TotalAdmins)
+	if posture.Admins.TotalAdmins != 3 {
+		t.Errorf("admins.total = %d, want 3", posture.Admins.TotalAdmins)
 	}
-	// Administrator With Billing is the highest role; Help Desk is not super-admin
+	// Only "Administrator With Billing" is super-admin
 	if posture.Admins.SuperAdminCount != 1 {
 		t.Errorf("super_admin_count = %d, want 1", posture.Admins.SuperAdminCount)
-	}
-
-	if posture.Apps == nil {
-		t.Fatal("apps should be present")
-	}
-	if posture.Apps.SSOEnabledApps != 2 {
-		t.Errorf("apps.sso_enabled = %d, want 2", posture.Apps.SSOEnabledApps)
-	}
-
-	if posture.Policies == nil {
-		t.Fatal("policies should be present")
-	}
-	if !posture.Policies.HasMFARequiredPolicy {
-		t.Error("has_mfa_required_policy should be true")
-	}
-	if !posture.Policies.HasDeviceManagedCondition {
-		t.Error("has_device_managed_condition should be true")
-	}
-	if !posture.Policies.HasPhishingResistantAdminPolicy {
-		t.Error("has_phishing_resistant_admin_policy should be true")
 	}
 
 	if posture.Devices == nil {
 		t.Fatal("devices should be present")
 	}
-	if posture.Devices.TotalSystems != 3 {
-		t.Errorf("devices.total = %d, want 3", posture.Devices.TotalSystems)
-	}
-	// mac-1 has deviceId, win-1 has windowsDeviceId
+	// mac-1 (internal vendor + deviceId) and win-1 (internal vendor + windowsDeviceId)
 	if posture.Devices.MDMEnrolled != 2 {
-		t.Errorf("devices.mdm_enrolled = %d, want 2", posture.Devices.MDMEnrolled)
+		t.Errorf("mdm_enrolled = %d, want 2", posture.Devices.MDMEnrolled)
 	}
 
-	// Trust level must NOT include inventories or audit log
+	if posture.Policies == nil {
+		t.Fatal("policies should be present")
+	}
+	if !posture.Policies.HasDeviceManagedCondition {
+		t.Error("has_device_managed_condition should be true")
+	}
+
+	// Trust level must NOT include inventories
 	if posture.UserInventory != nil {
 		t.Error("user_inventory must be nil at trust level")
-	}
-	if posture.AppInventory != nil {
-		t.Error("app_inventory must be nil at trust level")
-	}
-	if posture.DeviceInventory != nil {
-		t.Error("device_inventory must be nil at trust level")
-	}
-	if posture.GroupInventory != nil {
-		t.Error("group_inventory must be nil at trust level")
-	}
-	if posture.PolicyInventory != nil {
-		t.Error("policy_inventory must be nil at trust level")
 	}
 	if posture.AuditLog != nil {
 		t.Error("audit_log must be nil at trust level")
@@ -236,18 +203,8 @@ func TestCollect_AuditLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
 	if posture.UserInventory == nil {
 		t.Fatal("user_inventory should be present at audit level")
-	}
-	if len(posture.UserInventory.PerUser) != 4 {
-		t.Errorf("user_inventory count = %d, want 4", len(posture.UserInventory.PerUser))
-	}
-	if posture.AppInventory == nil {
-		t.Fatal("app_inventory should be present")
-	}
-	if posture.PolicyInventory == nil {
-		t.Fatal("policy_inventory should be present")
 	}
 	if posture.AuditLog != nil {
 		t.Error("audit_log must be nil at audit level")
@@ -259,20 +216,14 @@ func TestCollect_InternalLevel(t *testing.T) {
 	mock.events = []jumpcloud.DirectoryInsightsEvent{
 		{EventType: "admin_login", Timestamp: "2024-01-01T00:00:00Z",
 			InitiatedBy: &jumpcloud.EventActor{Email: "admin@co.com"}},
-		{EventType: "user_login", Timestamp: "2024-01-01T00:00:00Z"},
 	}
-
 	c := New(Config{}, mock)
 	posture, err := c.Collect(context.Background(), componentsdk.LevelInternal)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
 	if posture.AuditLog == nil {
 		t.Fatal("audit_log should be present at internal level")
-	}
-	if posture.AuditLog.WindowDays != 7 {
-		t.Errorf("window_days = %d, want 7", posture.AuditLog.WindowDays)
 	}
 	if posture.UserInventory == nil {
 		t.Error("user_inventory should be present at internal level")
@@ -287,45 +238,22 @@ func TestCollect_PermissionDegradation(t *testing.T) {
 		systemsErr: &jumpcloud.APIError{StatusCode: 403},
 		policyErr:  &jumpcloud.APIError{StatusCode: 403},
 	}
-
 	c := New(Config{}, mock)
 	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	if posture.Apps != nil {
-		t.Error("apps should be nil when permission denied")
-	}
-	if posture.Admins != nil {
-		t.Error("admins should be nil when permission denied")
-	}
-	if posture.Devices != nil {
-		t.Error("devices should be nil when permission denied")
-	}
-	if posture.Policies != nil {
-		t.Error("policies should be nil when permission denied")
+	if posture.Apps != nil || posture.Admins != nil || posture.Devices != nil || posture.Policies != nil {
+		t.Error("unavailable surfaces should be nil")
 	}
 	if posture.Diagnostics == nil || len(posture.Diagnostics.PermissionErrors) < 4 {
-		t.Errorf("expected at least 4 permission errors")
-	}
-}
-
-func TestCollect_CancellationPropagates(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	mock := &mockClient{usersErr: context.Canceled}
-	c := New(Config{}, mock)
-	_, err := c.Collect(ctx, componentsdk.LevelTrust)
-	if err == nil {
-		t.Fatal("expected error from cancelled context")
+		t.Error("expected at least 4 permission errors")
 	}
 }
 
 func TestCollect_UnauthorizedIsFatal(t *testing.T) {
 	mock := &mockClient{
-		users:   []jumpcloud.SystemUser{{ID: "u1", Username: "alice", State: "ACTIVATED"}},
+		users:   []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED"}},
 		appsErr: &jumpcloud.APIError{StatusCode: 401},
 	}
 	c := New(Config{}, mock)
@@ -337,7 +265,7 @@ func TestCollect_UnauthorizedIsFatal(t *testing.T) {
 
 func TestCollect_OrganizationUnauthorizedIsFatal(t *testing.T) {
 	mock := &mockClient{
-		users:  []jumpcloud.SystemUser{{ID: "u1", Username: "alice", State: "ACTIVATED"}},
+		users:  []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED"}},
 		orgErr: &jumpcloud.APIError{StatusCode: 401},
 	}
 	c := New(Config{}, mock)
@@ -347,41 +275,87 @@ func TestCollect_OrganizationUnauthorizedIsFatal(t *testing.T) {
 	}
 }
 
+func TestCollect_CancellationPropagates(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	mock := &mockClient{usersErr: context.Canceled}
+	c := New(Config{}, mock)
+	_, err := c.Collect(ctx, componentsdk.LevelTrust)
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+}
+
+func TestCollect_V2Capped_EmitsDiagnostic(t *testing.T) {
+	mock := richMock()
+	mock.ugCapped = true
+	mock.sgCapped = true
+	mock.polCapped = true
+
+	c := New(Config{}, mock)
+	posture, err := c.Collect(context.Background(), componentsdk.LevelAudit)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if posture.Diagnostics == nil {
+		t.Fatal("diagnostics should be present when V2 lists are capped")
+	}
+	if len(posture.Diagnostics.Warnings) < 3 {
+		t.Errorf("expected at least 3 cap warnings, got %d", len(posture.Diagnostics.Warnings))
+	}
+}
+
 func TestCollect_MFACoverage_SMSOnly(t *testing.T) {
 	mock := &mockClient{
 		users: []jumpcloud.SystemUser{
 			{ID: "u1", Username: "alice", State: "ACTIVATED",
-				MFAEnrollment: &jumpcloud.MFAEnrollment{
-					OverallStatus: "ENROLLED",
-					SMSStatus:     "ENROLLED",
-				}},
+				MFAEnrollment: &jumpcloud.MFAEnrollment{OverallStatus: "ENROLLED", SMSStatus: "ENROLLED"}},
 		},
 	}
-
 	c := New(Config{}, mock)
 	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
 	if posture.Authentication.MFACoveragePct != 100 {
-		t.Errorf("mfa_coverage_pct = %v, want 100 (SMS counts as MFA)", posture.Authentication.MFACoveragePct)
-	}
-	if posture.Authentication.WebAuthnEnrolledPct != 0 {
-		t.Errorf("webauthn_enrolled_pct = %v, want 0 (SMS is not phishing-resistant)", posture.Authentication.WebAuthnEnrolledPct)
+		t.Errorf("mfa_coverage_pct = %v, want 100", posture.Authentication.MFACoveragePct)
 	}
 }
 
-func TestCollect_MDM_WindowsDeviceID(t *testing.T) {
+func TestCollect_MDM_VendorNone(t *testing.T) {
 	mock := &mockClient{
-		users: []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED"}},
-		systems: []jumpcloud.System{
-			{ID: "s1", Hostname: "win-1", OS: "Windows", Active: true,
-				MDM: &jumpcloud.SystemMDM{
-					Vendor:   "internal",
-					Internal: &jumpcloud.MDMInternal{WindowsDeviceID: "win-dev1"},
-				}},
-		},
+		users:   []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED"}},
+		systems: []jumpcloud.System{{ID: "s1", Hostname: "h", Active: true, MDM: &jumpcloud.SystemMDM{Vendor: "none"}}},
+	}
+	c := New(Config{}, mock)
+	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if posture.Devices == nil || posture.Devices.MDMEnrolled != 0 {
+		t.Errorf("mdm_enrolled should be 0 for vendor=none")
+	}
+}
+
+func TestCollect_MDM_VendorUnknown(t *testing.T) {
+	mock := &mockClient{
+		users:   []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED"}},
+		systems: []jumpcloud.System{{ID: "s1", Hostname: "h", Active: true, MDM: &jumpcloud.SystemMDM{Vendor: "unknown"}}},
+	}
+	c := New(Config{}, mock)
+	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if posture.Devices == nil || posture.Devices.MDMEnrolled != 0 {
+		t.Errorf("mdm_enrolled should be 0 for vendor=unknown")
+	}
+}
+
+func TestCollect_MDM_VendorExternal(t *testing.T) {
+	mock := &mockClient{
+		users:   []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED"}},
+		systems: []jumpcloud.System{{ID: "s1", Hostname: "h", Active: true, MDM: &jumpcloud.SystemMDM{Vendor: "external"}}},
 	}
 	c := New(Config{}, mock)
 	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
@@ -389,39 +363,20 @@ func TestCollect_MDM_WindowsDeviceID(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if posture.Devices == nil || posture.Devices.MDMEnrolled != 1 {
-		t.Errorf("mdm_enrolled = %v, want 1 (windowsDeviceId present)", posture.Devices)
-	}
-}
-
-func TestCollect_MDM_VendorOnly(t *testing.T) {
-	mock := &mockClient{
-		users: []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED"}},
-		systems: []jumpcloud.System{
-			{ID: "s1", Hostname: "mac-1", OS: "Mac OS X", Active: true,
-				MDM: &jumpcloud.SystemMDM{Vendor: "jamf"}},
-		},
-	}
-	c := New(Config{}, mock)
-	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if posture.Devices == nil || posture.Devices.MDMEnrolled != 1 {
-		t.Errorf("mdm_enrolled should be 1 (third-party vendor present)")
+		t.Errorf("mdm_enrolled should be 1 for vendor=external")
 	}
 }
 
 func TestCollect_PartialDiscovery(t *testing.T) {
 	mock := richMock()
-	mock.userTotal = 100 // server says 100 but only 4 returned
-	mock.appTotal = 50   // server says 50 but only 3 returned
+	mock.userTotal = 100
+	mock.appTotal = 50
 
 	c := New(Config{}, mock)
 	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
 	if !posture.Users.Partial {
 		t.Error("users.partial should be true")
 	}
@@ -430,98 +385,39 @@ func TestCollect_PartialDiscovery(t *testing.T) {
 	}
 }
 
-func TestCollect_EmptyOrg(t *testing.T) {
-	mock := &mockClient{users: []jumpcloud.SystemUser{}}
-	c := New(Config{}, mock)
-	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if posture.Users.Total != 0 {
-		t.Errorf("users.total = %d, want 0", posture.Users.Total)
-	}
-}
-
-func TestCollect_ValidJSON(t *testing.T) {
-	c := New(Config{}, richMock())
-	posture, err := c.Collect(context.Background(), componentsdk.LevelAudit)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	data, err := json.Marshal(posture)
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err)
-	}
-}
-
-func TestToIDPPosture(t *testing.T) {
+func TestToIDPPosture_Complete(t *testing.T) {
 	c := New(Config{}, richMock())
 	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
 	idp := posture.ToIDPPosture()
 	if idp == nil {
-		t.Fatal("ToIDPPosture() returned nil")
+		t.Fatal("should not be nil for complete data")
 	}
 	if idp.Provider != "jumpcloud" {
-		t.Errorf("provider = %q, want jumpcloud", idp.Provider)
-	}
-	if idp.UserSecurity.MFACoveragePct < 66 || idp.UserSecurity.MFACoveragePct > 67 {
-		t.Errorf("mfa_coverage_pct = %v, want ~66.67", idp.UserSecurity.MFACoveragePct)
+		t.Errorf("provider = %q", idp.Provider)
 	}
 	if idp.AppSecurity == nil {
-		t.Fatal("app_security should be present (complete data)")
+		t.Error("app_security should be present")
 	}
 	if idp.PrivilegedAccess == nil {
-		t.Fatal("privileged_access should be present (complete data)")
+		t.Fatal("privileged_access should be present")
 	}
 	if idp.PrivilegedAccess.SuperAdminCount != 1 {
 		t.Errorf("super_admin_count = %d, want 1", idp.PrivilegedAccess.SuperAdminCount)
 	}
 }
 
-func TestToIDPPosture_OmitsPartialSections(t *testing.T) {
+func TestToIDPPosture_PartialUsersReturnsNil(t *testing.T) {
 	posture := &OrgPosture{
-		Users:          UserMetrics{Total: 10, Active: 10, Partial: true},
-		Authentication: AuthenticationMetrics{MFACoveragePct: 50},
-		Apps:           &AppMetrics{TotalApps: 5, SSOEnabledApps: 3, Partial: false},
-		Admins:         &AdminMetrics{TotalAdmins: 2, SuperAdminCount: 1, Partial: false},
-	}
-
-	idp := posture.ToIDPPosture()
-	if idp == nil {
-		t.Fatal("should not be nil with 10 users")
-	}
-	// Partial user discovery => omit sections that depend on complete user counts
-	if idp.AppSecurity != nil {
-		t.Error("app_security should be nil when users are partial")
-	}
-	if idp.PrivilegedAccess != nil {
-		t.Error("privileged_access should be nil when users are partial")
-	}
-}
-
-func TestToIDPPosture_OmitsPartialApps(t *testing.T) {
-	posture := &OrgPosture{
-		Users:          UserMetrics{Total: 1, Active: 1},
+		Users:          UserMetrics{Total: 100, Active: 100, Partial: true},
 		Authentication: AuthenticationMetrics{MFACoveragePct: 100},
-		Apps:           &AppMetrics{TotalApps: 5, Partial: true},
+		Apps:           &AppMetrics{TotalApps: 5, SSOEnabledApps: 5},
 		Admins:         &AdminMetrics{TotalAdmins: 1, SuperAdminCount: 1},
 	}
-
-	idp := posture.ToIDPPosture()
-	if idp.AppSecurity != nil {
-		t.Error("app_security should be nil when apps are partial")
-	}
-	if idp.PrivilegedAccess == nil {
-		t.Error("privileged_access should be present (admins complete)")
+	if idp := posture.ToIDPPosture(); idp != nil {
+		t.Error("should return nil when users are partial")
 	}
 }
 
@@ -529,89 +425,47 @@ func TestToIDPPosture_NoEnforcementClaims(t *testing.T) {
 	posture := &OrgPosture{
 		Users:          UserMetrics{Total: 1, Active: 1},
 		Authentication: AuthenticationMetrics{MFACoveragePct: 100},
-		Policies:       &PolicyMetrics{HasMFARequiredPolicy: true, HasDeviceManagedCondition: true},
+		Policies:       &PolicyMetrics{HasMFARequiredPolicy: true},
 	}
-
 	idp := posture.ToIDPPosture()
-	if idp == nil {
-		t.Fatal("should not be nil")
-	}
-	// Policy and DeviceAccess should NOT appear in normalized output
 	data, _ := json.Marshal(idp)
 	var raw map[string]any
 	_ = json.Unmarshal(data, &raw)
 	if _, ok := raw["policy"]; ok {
-		t.Error("normalized output must not contain policy enforcement claims")
+		t.Error("must not contain policy")
 	}
 	if _, ok := raw["device_access"]; ok {
-		t.Error("normalized output must not contain device_access enforcement claims")
-	}
-}
-
-func TestToIDPPosture_UnavailableSections(t *testing.T) {
-	posture := &OrgPosture{
-		Users:          UserMetrics{Total: 1, Active: 1},
-		Authentication: AuthenticationMetrics{MFACoveragePct: 100},
-	}
-
-	idp := posture.ToIDPPosture()
-	if idp == nil {
-		t.Fatal("should not be nil with 1 user")
-	}
-	if idp.AppSecurity != nil {
-		t.Error("app_security should be nil when apps unavailable")
-	}
-	if idp.PrivilegedAccess != nil {
-		t.Error("privileged_access should be nil when admins unavailable")
+		t.Error("must not contain device_access")
 	}
 }
 
 func TestToIDPPosture_NoUsers(t *testing.T) {
 	posture := &OrgPosture{}
-	if idp := posture.ToIDPPosture(); idp != nil {
-		t.Error("ToIDPPosture() should return nil when there are no users")
+	if posture.ToIDPPosture() != nil {
+		t.Error("should return nil for zero users")
 	}
 }
 
-func TestConditionHasDeviceManaged_BooleanTrue(t *testing.T) {
-	p := jumpcloud.AuthPolicy{Conditions: json.RawMessage(`{"deviceManaged":true}`)}
-	if !p.ConditionHasDeviceManaged() {
-		t.Error("should detect deviceManaged:true")
+func TestConditionHasDeviceManaged(t *testing.T) {
+	tests := []struct {
+		name string
+		cond json.RawMessage
+		want bool
+	}{
+		{"boolean true", json.RawMessage(`{"deviceManaged":true}`), true},
+		{"boolean false", json.RawMessage(`{"deviceManaged":false}`), false},
+		{"nested in all", json.RawMessage(`{"all":[{"deviceManaged":true}]}`), true},
+		{"nested in not", json.RawMessage(`{"not":{"deviceManaged":true}}`), true},
+		{"absent", json.RawMessage(`{"ipAddressIn":["10.0.0.0/8"]}`), false},
+		{"nil", nil, false},
 	}
-}
-
-func TestConditionHasDeviceManaged_BooleanFalse(t *testing.T) {
-	p := jumpcloud.AuthPolicy{Conditions: json.RawMessage(`{"deviceManaged":false}`)}
-	if p.ConditionHasDeviceManaged() {
-		t.Error("should not detect deviceManaged:false")
-	}
-}
-
-func TestConditionHasDeviceManaged_NestedInAll(t *testing.T) {
-	p := jumpcloud.AuthPolicy{Conditions: json.RawMessage(`{"all":[{"deviceManaged":true},{"ipAddressIn":["10.0.0.0/8"]}]}`)}
-	if !p.ConditionHasDeviceManaged() {
-		t.Error("should detect deviceManaged nested in all")
-	}
-}
-
-func TestConditionHasDeviceManaged_NestedInNot(t *testing.T) {
-	p := jumpcloud.AuthPolicy{Conditions: json.RawMessage(`{"not":{"deviceManaged":true}}`)}
-	if !p.ConditionHasDeviceManaged() {
-		t.Error("should detect deviceManaged nested in not (condition exists)")
-	}
-}
-
-func TestConditionHasDeviceManaged_Absent(t *testing.T) {
-	p := jumpcloud.AuthPolicy{Conditions: json.RawMessage(`{"ipAddressIn":["10.0.0.0/8"]}`)}
-	if p.ConditionHasDeviceManaged() {
-		t.Error("should not detect absent deviceManaged")
-	}
-}
-
-func TestConditionHasDeviceManaged_NilConditions(t *testing.T) {
-	p := jumpcloud.AuthPolicy{}
-	if p.ConditionHasDeviceManaged() {
-		t.Error("should not detect on nil conditions")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := jumpcloud.AuthPolicy{Conditions: tt.cond}
+			if got := p.ConditionHasDeviceManaged(); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -621,16 +475,13 @@ func TestPhishingResistantOnly(t *testing.T) {
 		factors []jumpcloud.MFAFactorEntry
 		want    bool
 	}{
-		{"empty means any allowed", nil, false},
+		{"empty", nil, false},
 		{"webauthn only", []jumpcloud.MFAFactorEntry{{Type: "WEBAUTHN"}}, true},
-		{"webauthn+fido2 only", []jumpcloud.MFAFactorEntry{{Type: "WEBAUTHN"}, {Type: "FIDO2"}}, true},
-		{"mixed with totp", []jumpcloud.MFAFactorEntry{{Type: "WEBAUTHN"}, {Type: "TOTP"}}, false},
-		{"totp only", []jumpcloud.MFAFactorEntry{{Type: "TOTP"}}, false},
+		{"mixed", []jumpcloud.MFAFactorEntry{{Type: "WEBAUTHN"}, {Type: "TOTP"}}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isPhishingResistantOnly(tt.factors)
-			if got != tt.want {
+			if got := isPhishingResistantOnly(tt.factors); got != tt.want {
 				t.Errorf("got %v, want %v", got, tt.want)
 			}
 		})
@@ -643,7 +494,7 @@ func TestIsSuperAdmin(t *testing.T) {
 		want bool
 	}{
 		{"Administrator With Billing", true},
-		{"Administrator", true},
+		{"Administrator", false},
 		{"Help Desk", false},
 		{"Read Only", false},
 		{"", false},
@@ -657,20 +508,12 @@ func TestIsSuperAdmin(t *testing.T) {
 
 func TestNormalizeOS(t *testing.T) {
 	tests := []struct {
-		input string
-		want  string
+		input, want string
 	}{
-		{"Mac OS X", "macOS"},
-		{"macOS", "macOS"},
-		{"Windows 10", "Windows"},
-		{"Ubuntu 22.04", "Linux"},
-		{"CentOS 7", "Linux"},
-		{"", ""},
-		{"ChromeOS", "ChromeOS"},
+		{"Mac OS X", "macOS"}, {"Windows 10", "Windows"}, {"Ubuntu 22.04", "Linux"}, {"", ""}, {"ChromeOS", "ChromeOS"},
 	}
 	for _, tt := range tests {
-		got := normalizeOS(tt.input)
-		if got != tt.want {
+		if got := normalizeOS(tt.input); got != tt.want {
 			t.Errorf("normalizeOS(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}

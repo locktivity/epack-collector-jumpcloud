@@ -40,25 +40,22 @@ type IDPPostureLifecycle struct {
 // ToIDPPosture transforms the JumpCloud-specific posture into the shared
 // idp-posture@v1 shape.
 //
-// Returns nil when there are no users, because all percentages would be
-// zero and indistinguishable from genuinely poor posture.
+// Returns nil when:
+//   - there are no users (percentages would be zero/meaningless)
+//   - user discovery was incomplete (percentages would misrepresent coverage)
 //
 // Sections that depend on optional surfaces (Apps, Admins) are only emitted
 // when the corresponding data was successfully collected and is complete.
-// Unavailable or partial sections are omitted rather than published with
-// potentially misleading values.
 //
 // Fields we deliberately omit:
-//   - inactive_pct: the collector does not yet measure login activity
-//   - policy: the collector observes policy configuration, not effective
-//     enforcement. Publishing policy presence as normalized enforcement
-//     claims (mfa_required, phishing_resistant_required_for_privileged,
-//     managed_device_required) would overstate what the data proves.
-//     Policy configuration is available in the detailed artifact.
-//   - device_access: same rationale as policy; a device-managed condition
-//     on a policy does not establish a global device requirement.
+//   - inactive_pct: the collector does not measure login activity
+//   - policy/device_access: the collector observes policy configuration, not
+//     effective enforcement. Policy data is in the detailed artifact.
 func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 	if o.Users.Total == 0 {
+		return nil
+	}
+	if o.Users.Partial {
 		return nil
 	}
 
@@ -77,12 +74,6 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 		Lifecycle: &IDPPostureLifecycle{
 			SuspendedPct: &suspendedPct,
 		},
-	}
-
-	// Only emit when user discovery was complete; partial user lists
-	// would distort the percentages.
-	if o.Users.Partial {
-		return posture
 	}
 
 	if o.Apps != nil && o.Apps.TotalApps > 0 && !o.Apps.Partial {

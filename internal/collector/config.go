@@ -24,12 +24,12 @@ type Config struct {
 type JumpCloudClient interface {
 	ListSystemUsers(ctx context.Context) ([]jumpcloud.SystemUser, int, error)
 	ListApplications(ctx context.Context) ([]jumpcloud.Application, int, error)
-	GetOrganization(ctx context.Context) (*jumpcloud.Organization, error)
+	GetOrganization(ctx context.Context, orgID string) (*jumpcloud.Organization, error)
 	ListAdministrators(ctx context.Context) ([]jumpcloud.Administrator, int, error)
 	ListSystems(ctx context.Context) ([]jumpcloud.System, int, error)
-	ListUserGroups(ctx context.Context) ([]jumpcloud.UserGroup, error)
-	ListSystemGroups(ctx context.Context) ([]jumpcloud.SystemGroup, error)
-	ListAuthPolicies(ctx context.Context) ([]jumpcloud.AuthPolicy, error)
+	ListUserGroups(ctx context.Context) ([]jumpcloud.UserGroup, bool, error)
+	ListSystemGroups(ctx context.Context) ([]jumpcloud.SystemGroup, bool, error)
+	ListAuthPolicies(ctx context.Context) ([]jumpcloud.AuthPolicy, bool, error)
 	QueryEvents(ctx context.Context, service string, start, end time.Time, limit int) ([]jumpcloud.DirectoryInsightsEvent, error)
 }
 

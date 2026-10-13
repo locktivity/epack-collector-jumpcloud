@@ -62,13 +62,16 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	}
 
 	c.status("Fetching authentication policies")
-	policies, policyErr := c.client.ListAuthPolicies(ctx)
+	policies, policyCapped, policyErr := c.client.ListAuthPolicies(ctx)
 	if policyErr != nil {
 		if isFatal(policyErr) {
 			return nil, policyErr
 		}
 		recordSurfaceError(diag, "auth_policies", policyErr)
 	} else {
+		if policyCapped {
+			diag.surfaceWarning("auth_policies", "results capped at internal limit; policy inventory may be incomplete")
+		}
 		posture.Policies = computePolicyMetrics(policies)
 	}
 
@@ -84,14 +87,12 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 		posture.Devices = computeDeviceMetrics(systems, sysPartial)
 	}
 
-	org, orgErr := c.client.GetOrganization(ctx)
+	org, orgErr := c.client.GetOrganization(ctx, c.cfg.OrgID)
 	if orgErr != nil {
 		if isFatal(orgErr) {
 			return nil, orgErr
 		}
-		if !isDenied(orgErr) && !errors.Is(orgErr, jumpcloud.ErrNotFound) {
-			diag.surfaceWarning("organization", safeDiagError(orgErr))
-		}
+		diag.surfaceWarning("organization", safeDiagError(orgErr))
 	} else if org != nil {
 		posture.OrgID = org.ID
 	}
@@ -113,19 +114,23 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 			posture.PolicyInventory = buildPolicyInventory(policies)
 		}
 
-		userGroups, ugErr := c.client.ListUserGroups(ctx)
+		userGroups, ugCapped, ugErr := c.client.ListUserGroups(ctx)
 		if ugErr != nil {
 			if isFatal(ugErr) {
 				return nil, ugErr
 			}
 			recordSurfaceError(diag, "user_groups", ugErr)
+		} else if ugCapped {
+			diag.surfaceWarning("user_groups", "results capped at internal limit; group inventory may be incomplete")
 		}
-		systemGroups, sgErr := c.client.ListSystemGroups(ctx)
+		systemGroups, sgCapped, sgErr := c.client.ListSystemGroups(ctx)
 		if sgErr != nil {
 			if isFatal(sgErr) {
 				return nil, sgErr
 			}
 			recordSurfaceError(diag, "system_groups", sgErr)
+		} else if sgCapped {
+			diag.surfaceWarning("system_groups", "results capped at internal limit; group inventory may be incomplete")
 		}
 		if ugErr == nil || sgErr == nil {
 			posture.GroupInventory = buildGroupInventory(userGroups, systemGroups)
@@ -266,17 +271,13 @@ func computeAdminMetrics(admins []jumpcloud.Administrator, partial bool) *AdminM
 	}
 }
 
-// isSuperAdmin returns true for role names that indicate the highest level of
-// administrative access. JumpCloud's "Administrator With Billing" role has
-// unrestricted access including billing; the plain "Administrator" role lacks
-// billing but has full directory control. Both are counted as super-admin.
+// isSuperAdmin returns true only for the highest-privilege JumpCloud role.
+// "Administrator With Billing" has unrestricted access including billing,
+// administrator management, and MTP control. The plain "Administrator" role
+// lacks some of these permissions and is counted as privileged but not as
+// the highest-privilege/super-admin tier.
 func isSuperAdmin(roleName string) bool {
-	switch roleName {
-	case "Administrator With Billing", "Administrator":
-		return true
-	default:
-		return false
-	}
+	return roleName == "Administrator With Billing"
 }
 
 func computeAppMetrics(apps []jumpcloud.Application, partial bool) *AppMetrics {

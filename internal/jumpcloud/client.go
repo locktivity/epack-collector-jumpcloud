@@ -158,8 +158,11 @@ func (c *Client) ListApplications(ctx context.Context) ([]Application, int, erro
 	return all, serverTotal, nil
 }
 
-// GetOrganization returns the first organization associated with the API key.
-func (c *Client) GetOrganization(ctx context.Context) (*Organization, error) {
+// GetOrganization resolves the organization identity. When orgID is provided
+// (MSP scenario), it validates that the ID matches a returned organization.
+// When orgID is empty, returns the sole organization or an error if multiple
+// are present (ambiguous without explicit selection).
+func (c *Client) GetOrganization(ctx context.Context, orgID string) (*Organization, error) {
 	var page struct {
 		TotalCount int            `json:"totalCount"`
 		Results    []Organization `json:"results"`
@@ -169,6 +172,19 @@ func (c *Client) GetOrganization(ctx context.Context) (*Organization, error) {
 	}
 	if len(page.Results) == 0 {
 		return nil, nil
+	}
+
+	if orgID != "" {
+		for i := range page.Results {
+			if page.Results[i].ID == orgID {
+				return &page.Results[i], nil
+			}
+		}
+		return nil, fmt.Errorf("configured org_id %q not found in organization list", orgID)
+	}
+
+	if len(page.Results) > 1 {
+		return nil, fmt.Errorf("multiple organizations returned; set org_id to select one")
 	}
 	return &page.Results[0], nil
 }
@@ -222,61 +238,69 @@ func (c *Client) ListSystems(ctx context.Context) ([]System, int, error) {
 }
 
 // ListUserGroups returns all user groups via the V2 API.
-func (c *Client) ListUserGroups(ctx context.Context) ([]UserGroup, error) {
+// The capped return value is true when the result was truncated at the
+// internal safety cap and may not represent all groups.
+func (c *Client) ListUserGroups(ctx context.Context) ([]UserGroup, bool, error) {
 	var all []UserGroup
 	skip := 0
 	for {
 		var page []UserGroup
 		path := fmt.Sprintf("/api/v2/usergroups?skip=%d&limit=%d", skip, maxPerPage)
 		if err := c.consoleGet(ctx, path, &page); err != nil {
-			return nil, fmt.Errorf("listing user groups: %w", err)
+			return nil, false, fmt.Errorf("listing user groups: %w", err)
 		}
 		all = append(all, page...)
-		if len(page) < maxPerPage || len(all) >= maxResults {
-			break
+		if len(page) < maxPerPage {
+			return all, false, nil
+		}
+		if len(all) >= maxResults {
+			return all, true, nil
 		}
 		skip = len(all)
 	}
-	return all, nil
 }
 
 // ListSystemGroups returns all system groups via the V2 API.
-func (c *Client) ListSystemGroups(ctx context.Context) ([]SystemGroup, error) {
+func (c *Client) ListSystemGroups(ctx context.Context) ([]SystemGroup, bool, error) {
 	var all []SystemGroup
 	skip := 0
 	for {
 		var page []SystemGroup
 		path := fmt.Sprintf("/api/v2/systemgroups?skip=%d&limit=%d", skip, maxPerPage)
 		if err := c.consoleGet(ctx, path, &page); err != nil {
-			return nil, fmt.Errorf("listing system groups: %w", err)
+			return nil, false, fmt.Errorf("listing system groups: %w", err)
 		}
 		all = append(all, page...)
-		if len(page) < maxPerPage || len(all) >= maxResults {
-			break
+		if len(page) < maxPerPage {
+			return all, false, nil
+		}
+		if len(all) >= maxResults {
+			return all, true, nil
 		}
 		skip = len(all)
 	}
-	return all, nil
 }
 
 // ListAuthPolicies returns all authentication policies via the V2 API.
 // The V2 authn/policies endpoint returns a bare array (not a wrapped object).
-func (c *Client) ListAuthPolicies(ctx context.Context) ([]AuthPolicy, error) {
+func (c *Client) ListAuthPolicies(ctx context.Context) ([]AuthPolicy, bool, error) {
 	var all []AuthPolicy
 	skip := 0
 	for {
 		var page []AuthPolicy
 		path := fmt.Sprintf("/api/v2/authn/policies?skip=%d&limit=%d", skip, maxPerPage)
 		if err := c.consoleGet(ctx, path, &page); err != nil {
-			return nil, fmt.Errorf("listing auth policies: %w", err)
+			return nil, false, fmt.Errorf("listing auth policies: %w", err)
 		}
 		all = append(all, page...)
-		if len(page) < maxPerPage || len(all) >= maxResults {
-			break
+		if len(page) < maxPerPage {
+			return all, false, nil
+		}
+		if len(all) >= maxResults {
+			return all, true, nil
 		}
 		skip = len(all)
 	}
-	return all, nil
 }
 
 // QueryEvents queries Directory Insights events. Uses the dedicated insights
