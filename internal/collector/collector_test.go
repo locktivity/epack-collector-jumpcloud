@@ -275,6 +275,18 @@ func TestCollect_OrganizationUnauthorizedIsFatal(t *testing.T) {
 	}
 }
 
+func TestCollect_OrgValidationEmptyListWithOrgID(t *testing.T) {
+	mock := &mockClient{
+		users:  []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED"}},
+		orgErr: &jumpcloud.OrgValidationError{},
+	}
+	c := New(Config{OrgID: "tenant-b"}, mock)
+	_, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	if err == nil {
+		t.Fatal("expected fatal error when org_id is set but no orgs returned")
+	}
+}
+
 func TestCollect_CancellationPropagates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

@@ -166,6 +166,35 @@ func TestClient_QueryEvents_InsightsHost(t *testing.T) {
 	}
 }
 
+func TestClient_GetOrganization_EmptyListWithOrgID(t *testing.T) {
+	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, map[string]any{"totalCount": 0, "results": []any{}})
+	})
+
+	_, err := client.GetOrganization(context.Background(), "tenant-b")
+	if err == nil {
+		t.Fatal("expected error when org_id is set but no orgs returned")
+	}
+	var ve *OrgValidationError
+	if !errors.As(err, &ve) {
+		t.Errorf("expected OrgValidationError, got %T: %v", err, err)
+	}
+}
+
+func TestClient_GetOrganization_EmptyListNoOrgID(t *testing.T) {
+	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, map[string]any{"totalCount": 0, "results": []any{}})
+	})
+
+	org, err := client.GetOrganization(context.Background(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if org != nil {
+		t.Error("expected nil org for empty list without org_id")
+	}
+}
+
 func TestClient_ErrorUnauthorized(t *testing.T) {
 	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

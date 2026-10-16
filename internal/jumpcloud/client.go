@@ -184,6 +184,11 @@ func (c *Client) GetOrganization(ctx context.Context, orgID string) (*Organizati
 	}
 
 	if len(all) == 0 {
+		if orgID != "" {
+			return nil, &OrgValidationError{
+				msg: fmt.Sprintf("configured org_id %q not found: no organizations returned", orgID),
+			}
+		}
 		return nil, nil
 	}
 
