@@ -78,6 +78,11 @@ func classifyError(err error) error {
 		return componentsdk.NewAuthError("JumpCloud API key lacks required permissions")
 	}
 
+	var orgErr *jumpcloud.OrgValidationError
+	if errors.As(err, &orgErr) {
+		return componentsdk.NewConfigError("organization: %s", orgErr.Error())
+	}
+
 	var apiErr *jumpcloud.APIError
 	if errors.As(err, &apiErr) {
 		return componentsdk.NewNetworkError("JumpCloud API returned HTTP %d", apiErr.StatusCode)

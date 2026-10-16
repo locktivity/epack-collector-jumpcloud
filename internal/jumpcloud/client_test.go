@@ -114,7 +114,7 @@ func TestClient_ListAuthPolicies_BareArray(t *testing.T) {
 		})
 	})
 
-	policies, err := client.ListAuthPolicies(context.Background())
+	policies, capped, err := client.ListAuthPolicies(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,6 +123,9 @@ func TestClient_ListAuthPolicies_BareArray(t *testing.T) {
 	}
 	if policies[0].Name != "MFA Policy" {
 		t.Errorf("name = %q, want MFA Policy", policies[0].Name)
+	}
+	if capped {
+		t.Error("capped should be false for a single page")
 	}
 }
 

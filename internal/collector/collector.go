@@ -89,7 +89,7 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 
 	org, orgErr := c.client.GetOrganization(ctx, c.cfg.OrgID)
 	if orgErr != nil {
-		if isFatal(orgErr) {
+		if isFatal(orgErr) || isOrgValidationError(orgErr) {
 			return nil, orgErr
 		}
 		diag.surfaceWarning("organization", safeDiagError(orgErr))

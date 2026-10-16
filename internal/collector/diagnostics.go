@@ -50,3 +50,8 @@ func isDenied(err error) bool {
 	return errors.Is(err, jumpcloud.ErrPermissionDenied) ||
 		errors.Is(err, jumpcloud.ErrUnauthorized)
 }
+
+func isOrgValidationError(err error) bool {
+	var ve *jumpcloud.OrgValidationError
+	return errors.As(err, &ve)
+}

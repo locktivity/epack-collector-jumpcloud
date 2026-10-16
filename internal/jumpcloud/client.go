@@ -52,7 +52,8 @@ func (e *APIError) Unwrap() error {
 }
 
 type retryableError struct {
-	msg string
+	statusCode int
+	msg        string
 }
 
 func (e *retryableError) Error() string { return e.msg }
@@ -161,33 +162,57 @@ func (c *Client) ListApplications(ctx context.Context) ([]Application, int, erro
 // GetOrganization resolves the organization identity. When orgID is provided
 // (MSP scenario), it validates that the ID matches a returned organization.
 // When orgID is empty, returns the sole organization or an error if multiple
-// are present (ambiguous without explicit selection).
+// are present (ambiguous without explicit selection). All pages are fetched
+// so that validation is not limited to the first page.
 func (c *Client) GetOrganization(ctx context.Context, orgID string) (*Organization, error) {
-	var page struct {
-		TotalCount int            `json:"totalCount"`
-		Results    []Organization `json:"results"`
+	var all []Organization
+	skip := 0
+	for {
+		var page struct {
+			TotalCount int            `json:"totalCount"`
+			Results    []Organization `json:"results"`
+		}
+		path := fmt.Sprintf("/api/organizations?skip=%d&limit=%d", skip, maxPerPage)
+		if err := c.consoleGet(ctx, path, &page); err != nil {
+			return nil, fmt.Errorf("getting organizations: %w", err)
+		}
+		all = append(all, page.Results...)
+		if len(all) >= page.TotalCount || len(page.Results) < maxPerPage {
+			break
+		}
+		skip = len(all)
 	}
-	if err := c.consoleGet(ctx, "/api/organizations", &page); err != nil {
-		return nil, fmt.Errorf("getting organization: %w", err)
-	}
-	if len(page.Results) == 0 {
+
+	if len(all) == 0 {
 		return nil, nil
 	}
 
 	if orgID != "" {
-		for i := range page.Results {
-			if page.Results[i].ID == orgID {
-				return &page.Results[i], nil
+		for i := range all {
+			if all[i].ID == orgID {
+				return &all[i], nil
 			}
 		}
-		return nil, fmt.Errorf("configured org_id %q not found in organization list", orgID)
+		return nil, &OrgValidationError{
+			msg: fmt.Sprintf("configured org_id %q not found in organization list", orgID),
+		}
 	}
 
-	if len(page.Results) > 1 {
-		return nil, fmt.Errorf("multiple organizations returned; set org_id to select one")
+	if len(all) > 1 {
+		return nil, &OrgValidationError{
+			msg: "multiple organizations returned; set org_id to select one",
+		}
 	}
-	return &page.Results[0], nil
+	return &all[0], nil
 }
+
+// OrgValidationError indicates that organization identity could not be
+// resolved. This is a configuration error, not a transient failure.
+type OrgValidationError struct {
+	msg string
+}
+
+func (e *OrgValidationError) Error() string { return e.msg }
 
 // ListAdministrators returns all JumpCloud admin portal administrators.
 func (c *Client) ListAdministrators(ctx context.Context) ([]Administrator, int, error) {
@@ -346,7 +371,10 @@ func (c *Client) doWithRetry(ctx context.Context, method, fullURL string, body a
 			return sleepErr
 		}
 	}
-	return fmt.Errorf("max retries exceeded: %w", lastErr)
+	return &APIError{
+		StatusCode: retryStatusCode(lastErr),
+		Body:       "max retries exceeded",
+	}
 }
 
 func (c *Client) do(ctx context.Context, method, fullURL string, reqBody any, out any) error {
@@ -380,7 +408,8 @@ func (c *Client) do(ctx context.Context, method, fullURL string, reqBody any, ou
 		respBody, _ := io.ReadAll(resp.Body)
 		if isRetryable(resp.StatusCode) {
 			return &retryableError{
-				msg: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateBody(respBody)),
+				statusCode: resp.StatusCode,
+				msg:        fmt.Sprintf("HTTP %d", resp.StatusCode),
 			}
 		}
 		return &APIError{StatusCode: resp.StatusCode, Body: truncateBody(respBody)}
@@ -395,6 +424,14 @@ func (c *Client) do(ctx context.Context, method, fullURL string, reqBody any, ou
 func isRetryableErr(err error) bool {
 	var re *retryableError
 	return errors.As(err, &re)
+}
+
+func retryStatusCode(err error) int {
+	var re *retryableError
+	if errors.As(err, &re) {
+		return re.statusCode
+	}
+	return 0
 }
 
 func truncateBody(b []byte) string {
