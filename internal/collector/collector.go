@@ -87,6 +87,20 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 		posture.Devices = computeDeviceMetrics(systems, sysPartial)
 	}
 
+	var endpointIn *endpointInputs
+	if sysErr == nil {
+		endpointIn = &endpointInputs{
+			systems:     systems,
+			serverTotal: serverSysTotal,
+			level:       level,
+			now:         now,
+			maxAge:      c.cfg.maxObservationAge(),
+		}
+		if err := c.fetchEndpointTelemetry(ctx, diag, endpointIn); err != nil {
+			return nil, err
+		}
+	}
+
 	org, orgErr := c.client.GetOrganization(ctx, c.cfg.OrgID)
 	if orgErr != nil {
 		if isFatal(orgErr) || isOrgValidationError(orgErr) {
@@ -153,6 +167,12 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+
+	if endpointIn != nil {
+		endpointIn.users = users
+		endpointIn.orgID = posture.OrgID
+		posture.endpoint = buildEndpointPosture(*endpointIn)
 	}
 
 	posture.Diagnostics = diag.toDiagnostics()
@@ -424,7 +444,7 @@ func buildDeviceInventory(systems []jumpcloud.System) *DeviceInventory {
 		rows = append(rows, DeviceRow{
 			Hostname:     s.Hostname,
 			OS:           s.OS,
-			OSVersion:    s.OSVersion,
+			OSVersion:    s.OSVersionString(),
 			Active:       s.Active,
 			AgentVersion: s.AgentVersion,
 			MDMEnrolled:  s.HasMDM(),

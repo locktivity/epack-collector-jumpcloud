@@ -152,6 +152,80 @@ func TestClient_ListSystems_V1Envelope(t *testing.T) {
 	}
 }
 
+func TestClient_ListSystems_EndpointFields(t *testing.T) {
+	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"totalCount":2,"results":[
+			{"_id":"s1","os":"Mac OS X","osFamily":"darwin","version":"15.1","lastContact":"2026-10-16T10:00:00.000Z",
+			 "fde":{"active":false,"keyPresent":true},"primarySystemUser":{"id":"u1"}},
+			{"_id":"s2","os":"Windows","osVersionDetail":{"version":"10.0.22631"},"lastContact":null,"fde":{}}
+		]}`))
+	})
+
+	systems, _, err := client.ListSystems(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	mac, win := systems[0], systems[1]
+	if mac.FDE == nil || mac.FDE.Active == nil || *mac.FDE.Active {
+		t.Error("fde.active=false must decode as a known false")
+	}
+	if win.FDE == nil || win.FDE.Active != nil {
+		t.Error("an absent fde.active must stay unknown")
+	}
+	if mac.OSVersionString() != "15.1" || win.OSVersionString() != "10.0.22631" {
+		t.Errorf("os versions = %q, %q", mac.OSVersionString(), win.OSVersionString())
+	}
+	if mac.PrimarySystemUser == nil || mac.PrimarySystemUser.ID != "u1" || win.LastContact != "" {
+		t.Errorf("primary user or null lastContact decoded wrong: %+v %+v", mac.PrimarySystemUser, win.LastContact)
+	}
+}
+
+func TestClient_ListInsights_PaginatesBareArrays(t *testing.T) {
+	var paths []string
+	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path+"?"+r.URL.RawQuery)
+		rows := make([]map[string]any, 0, insightsPageSize)
+		n := insightsPageSize
+		if r.URL.Query().Get("skip") != "0" {
+			n = 2
+		}
+		for range n {
+			rows = append(rows, map[string]any{"system_id": "s1", "collection_time": "2026-10-16 06:00:00 -0400",
+				"drive_letter": "C:", "protection_status": nil, "conversion_status": 1})
+		}
+		jsonResponse(w, rows)
+	})
+
+	rows, capped, err := client.ListBitLockerInfo(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rows) != insightsPageSize+2 || capped {
+		t.Errorf("rows = %d capped = %v, want %d uncapped", len(rows), capped, insightsPageSize+2)
+	}
+	if rows[0].ProtectionStatus != nil || rows[0].ConversionStatus == nil || *rows[0].ConversionStatus != 1 {
+		t.Error("null columns must decode as unknown, present ones as values")
+	}
+	want := []string{
+		"/api/v2/systeminsights/bitlocker_info?skip=0&limit=1000",
+		"/api/v2/systeminsights/bitlocker_info?skip=1000&limit=1000",
+	}
+	if len(paths) != 2 || paths[0] != want[0] || paths[1] != want[1] {
+		t.Errorf("paths = %v, want %v", paths, want)
+	}
+}
+
+func TestClient_ListInsights_DeniedIsPermissionError(t *testing.T) {
+	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	_, _, err := client.ListWindowsSecurityProducts(context.Background())
+	if !errors.Is(err, ErrPermissionDenied) {
+		t.Errorf("err = %v, want ErrPermissionDenied", err)
+	}
+}
+
 func TestClient_QueryEvents_InsightsHost(t *testing.T) {
 	var gotPath string
 	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {

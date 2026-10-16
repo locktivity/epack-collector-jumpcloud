@@ -12,7 +12,30 @@ When user discovery is complete (not capped), a second normalized artifact is al
 
 - `artifacts/jumpcloud.idp-posture.json`: normalized `evidencepack/idp-posture@v1` posture
 
-The normalized artifact is omitted when user discovery is incomplete or there are no users, because percentages computed from a partial population would misrepresent actual coverage.
+The IDP artifact is omitted when user discovery is incomplete or there are no users, because percentages computed from a partial population would misrepresent actual coverage.
+
+When device discovery succeeds, a normalized endpoint artifact is also emitted, independent of user discovery:
+
+- `artifacts/jumpcloud.endpoint-posture.json`: normalized `evidencepack/endpoint-posture@v1` posture
+
+### Endpoint posture
+
+Every percentage is `passing / (passing + failing)` over in-scope devices, with a `metric_coverage` entry giving passing, failing, unknown, and not-applicable device counts. Unknown readings are never counted as passing or failing. When a metric cannot be measured, it is omitted and `availability` says why.
+
+| Control | Source | Pass | Fail |
+|---------|--------|------|------|
+| Disk encryption (Windows) | System Insights `bitlocker_info`, C: volume | Protection on and fully encrypted | Protection off (including suspended), or not fully encrypted |
+| Disk encryption (other OSes) | Agent `fde.active` on `/api/systems` | `true` | `false` |
+| Firewall (macOS) | System Insights `alf` | `global_state` 1 or 2 | `global_state` 0 |
+| Firewall (Windows) | System Insights `windows_security_center` | `Good` | `Poor` |
+| Antimalware installed (Windows) | System Insights `windows_security_products` | An antivirus product is registered | Fresh enumeration lists no antivirus product |
+| Antimalware healthy (Windows) | System Insights `windows_security_products` | An antivirus product is on with current signatures | Every antivirus product is off or has outdated signatures |
+
+Readings older than `max_observation_age_hours` (default 168) are unknown. `fde.active` has no observation time, so it is only accepted from devices whose last agent check-in is within the limit, and no `observed_at` is reported for it. On Windows, a fresh `fde.active=false` is used as a failure when there is no fresh BitLocker reading.
+
+Not measured, and always listed in `availability`: screen lock, EDR, OS support and patch baselines, and overall compliance. Firewall and antimalware on Linux and mobile devices are reported as unknown.
+
+When device discovery is incomplete, fleet totals, percentages, and coverage are omitted, `scope.discovery_complete` is `false`, and each metric is listed as `partial`.
 
 ### Collection levels
 
@@ -31,6 +54,9 @@ Set the collection level in your pipeline configuration. This controls what data
 | Per-device inventory (hostname, OS, agent, MDM) | | Yes | Yes |
 | Per-policy inventory (name, type, MFA factors, conditions) | | Yes | Yes |
 | Directory Insights audit events (7-day window) | | | Yes |
+| Endpoint posture: fleet counts, control percentages, coverage | Yes | Yes | Yes |
+| Endpoint posture: per-device controls, primary user, last seen | | Yes | Yes |
+| Endpoint posture: local administrator accounts per device | | | Yes |
 
 ### What it does not measure
 
@@ -62,6 +88,7 @@ collectors:
 | Key | Required | Description |
 |-----|----------|-------------|
 | `org_id` | No | JumpCloud organization ID (string). Required for MSP/multi-tenant setups where the API key has access to multiple organizations. Must be a string; a non-string value is rejected. |
+| `max_observation_age_hours` | No | How old device telemetry may be and still count as a current reading. Whole number from 1 to 8760. Default 168 (7 days). |
 
 When `org_id` is set, the collector validates it against the organization list. When unset and the API key returns multiple organizations, collection fails with a clear error.
 
@@ -82,8 +109,9 @@ The API key needs read access to:
 - User groups and system groups (`/api/v2/usergroups`, `/api/v2/systemgroups`)
 - Authentication policies (`/api/v2/authn/policies`)
 - Directory Insights events at internal level (`/insights/directory/v1/events` on `api.jumpcloud.com`)
+- System Insights tables, requested only for OS families present in the fleet (`/api/v2/systeminsights/bitlocker_info`, `windows_security_center`, `windows_security_products`, `alf`, and `users` at internal level). System Insights must be enabled for the organization.
 
-Surfaces that return 403 degrade gracefully: that section is omitted and a diagnostic is recorded. A 401 from any surface is fatal.
+Surfaces that return 403 degrade gracefully: that section is omitted and a diagnostic is recorded. A denied System Insights table makes the affected endpoint controls unknown with a `permission_denied` availability entry. A 401 from any surface is fatal.
 
 ### Service hosts
 

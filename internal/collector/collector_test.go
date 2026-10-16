@@ -36,6 +36,40 @@ type mockClient struct {
 	policyErr    error
 	events       []jumpcloud.DirectoryInsightsEvent
 	eventsErr    error
+
+	bitlocker       []jumpcloud.InsightBitLocker
+	bitlockerCapped bool
+	bitlockerErr    error
+	alf             []jumpcloud.InsightALF
+	alfErr          error
+	wsc             []jumpcloud.InsightWindowsSecurityCenter
+	wscErr          error
+	products        []jumpcloud.InsightWindowsSecurityProduct
+	productsErr     error
+	insightUsers    []jumpcloud.InsightUser
+	insightUsersErr error
+	insightCalls    []string
+}
+
+func (m *mockClient) ListBitLockerInfo(ctx context.Context) ([]jumpcloud.InsightBitLocker, bool, error) {
+	m.insightCalls = append(m.insightCalls, "bitlocker_info")
+	return m.bitlocker, m.bitlockerCapped, m.bitlockerErr
+}
+func (m *mockClient) ListALF(ctx context.Context) ([]jumpcloud.InsightALF, bool, error) {
+	m.insightCalls = append(m.insightCalls, "alf")
+	return m.alf, false, m.alfErr
+}
+func (m *mockClient) ListWindowsSecurityCenter(ctx context.Context) ([]jumpcloud.InsightWindowsSecurityCenter, bool, error) {
+	m.insightCalls = append(m.insightCalls, "windows_security_center")
+	return m.wsc, false, m.wscErr
+}
+func (m *mockClient) ListWindowsSecurityProducts(ctx context.Context) ([]jumpcloud.InsightWindowsSecurityProduct, bool, error) {
+	m.insightCalls = append(m.insightCalls, "windows_security_products")
+	return m.products, false, m.productsErr
+}
+func (m *mockClient) ListInsightUsers(ctx context.Context) ([]jumpcloud.InsightUser, bool, error) {
+	m.insightCalls = append(m.insightCalls, "users")
+	return m.insightUsers, false, m.insightUsersErr
 }
 
 func (m *mockClient) ListSystemUsers(ctx context.Context) ([]jumpcloud.SystemUser, int, error) {

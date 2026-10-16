@@ -145,6 +145,28 @@ func TestE2E_IDPPostureTransformation(t *testing.T) {
 	t.Logf("IDP posture:\n%s", string(data))
 }
 
+func TestE2E_EndpointPosture(t *testing.T) {
+	level := e2eLevel()
+	posture := collectE2E(t, level)
+
+	ep := posture.ToEndpointPosture()
+	if ep == nil {
+		t.Skip("device discovery unavailable; skipping endpoint posture test")
+	}
+	for path, cov := range ep.MetricCoverage {
+		total := cov.PassingDevicesCount + cov.FailingDevicesCount + cov.UnknownDevicesCount + cov.NotApplicableDevicesCount
+		if ep.Scope.DiscoveryComplete && total != ep.Scope.ObservedDevicesCount {
+			t.Errorf("%s coverage sums to %d, want %d devices", path, total, ep.Scope.ObservedDevicesCount)
+		}
+	}
+	if !level.AtLeast(componentsdk.LevelAudit) && (len(ep.Devices) > 0 || ep.Inventories != nil) {
+		t.Error("trust level must not include device inventory")
+	}
+
+	data, _ := json.MarshalIndent(ep, "", "  ")
+	t.Logf("endpoint posture:\n%s", string(data))
+}
+
 func TestE2E_DiagnosticsAreSafe(t *testing.T) {
 	posture := collectE2E(t, e2eLevel())
 

@@ -10,12 +10,12 @@ type OrgPosture struct {
 	OrgID            string `json:"org_id,omitempty"`
 
 	// Trust level: aggregate metrics (always present after successful user fetch)
-	Users          UserMetrics            `json:"users"`
-	Authentication AuthenticationMetrics  `json:"authentication"`
-	Admins         *AdminMetrics          `json:"admins,omitempty"`
-	Apps           *AppMetrics            `json:"apps,omitempty"`
-	Policies       *PolicyMetrics         `json:"policies,omitempty"`
-	Devices        *DeviceMetrics         `json:"devices,omitempty"`
+	Users          UserMetrics           `json:"users"`
+	Authentication AuthenticationMetrics `json:"authentication"`
+	Admins         *AdminMetrics         `json:"admins,omitempty"`
+	Apps           *AppMetrics           `json:"apps,omitempty"`
+	Policies       *PolicyMetrics        `json:"policies,omitempty"`
+	Devices        *DeviceMetrics        `json:"devices,omitempty"`
 
 	// Audit level: per-entity inventories
 	UserInventory   *UserInventory   `json:"user_inventory,omitempty"`
@@ -28,6 +28,14 @@ type OrgPosture struct {
 	AuditLog *AuditLog `json:"audit_log,omitempty"`
 
 	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
+
+	endpoint *EndpointPosture
+}
+
+// ToEndpointPosture returns the normalized endpoint-posture@v1 artifact, or
+// nil when device discovery failed and there is no device evidence at all.
+func (o *OrgPosture) ToEndpointPosture() *EndpointPosture {
+	return o.endpoint
 }
 
 // --- Trust-level metrics ---
@@ -71,11 +79,11 @@ type AppMetrics struct {
 // PolicyMetrics contains authentication policy summary.
 // These describe policy configuration, not effective enforcement.
 type PolicyMetrics struct {
-	TotalPolicies                     int  `json:"total_policies"`
-	MFARequiredPolicies               int  `json:"mfa_required_policies"`
-	HasMFARequiredPolicy              bool `json:"has_mfa_required_policy"`
-	HasDeviceManagedCondition         bool `json:"has_device_managed_condition"`
-	HasPhishingResistantAdminPolicy   bool `json:"has_phishing_resistant_admin_policy"`
+	TotalPolicies                   int  `json:"total_policies"`
+	MFARequiredPolicies             int  `json:"mfa_required_policies"`
+	HasMFARequiredPolicy            bool `json:"has_mfa_required_policy"`
+	HasDeviceManagedCondition       bool `json:"has_device_managed_condition"`
+	HasPhishingResistantAdminPolicy bool `json:"has_phishing_resistant_admin_policy"`
 }
 
 // DeviceMetrics contains managed device counts.
@@ -156,20 +164,20 @@ type PolicyInventory struct {
 
 // AuthPolicyRow describes one authentication policy.
 type AuthPolicyRow struct {
-	Name            string   `json:"name"`
-	Type            string   `json:"type"`
-	Disabled        bool     `json:"disabled"`
-	MFARequired     bool     `json:"mfa_required"`
-	AllowedFactors  []string `json:"allowed_factors,omitempty"`
-	DeviceManaged   bool     `json:"device_managed"`
+	Name           string   `json:"name"`
+	Type           string   `json:"type"`
+	Disabled       bool     `json:"disabled"`
+	MFARequired    bool     `json:"mfa_required"`
+	AllowedFactors []string `json:"allowed_factors,omitempty"`
+	DeviceManaged  bool     `json:"device_managed"`
 }
 
 // --- Internal-level data ---
 
 // AuditLog holds a window of Directory Insights events.
 type AuditLog struct {
-	WindowDays       int            `json:"window_days"`
-	CountByType      map[string]int `json:"count_by_type"`
+	WindowDays       int             `json:"window_days"`
+	CountByType      map[string]int  `json:"count_by_type"`
 	Events           []AuditEventRow `json:"events,omitempty"`
 	Truncated        bool            `json:"truncated,omitempty"`
 	TruncatedDropped int             `json:"truncated_dropped,omitempty"`

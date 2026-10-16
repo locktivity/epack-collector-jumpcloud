@@ -2,7 +2,6 @@ package jumpcloud
 
 import (
 	"encoding/json"
-	"time"
 )
 
 // SystemUser represents a user from the V1 /api/systemusers endpoint.
@@ -99,15 +98,50 @@ type Administrator struct {
 
 // System represents a managed device from the V1 /api/systems endpoint.
 type System struct {
-	ID           string     `json:"_id"`
-	Hostname     string     `json:"hostname"`
-	DisplayName  string     `json:"displayName"`
-	OS           string     `json:"os"`
-	OSVersion    string     `json:"osVersion"`
-	AgentVersion string     `json:"agentVersion"`
-	Active       bool       `json:"active"`
-	LastContact  *time.Time `json:"lastContact"`
-	MDM          *SystemMDM `json:"mdm"`
+	ID                string                `json:"_id"`
+	Hostname          string                `json:"hostname"`
+	DisplayName       string                `json:"displayName"`
+	OS                string                `json:"os"`
+	OSFamily          string                `json:"osFamily"`
+	Version           string                `json:"version"`
+	OSVersionDetail   *OSVersionDetail      `json:"osVersionDetail"`
+	AgentVersion      string                `json:"agentVersion"`
+	Active            bool                  `json:"active"`
+	Created           string                `json:"created"`
+	LastContact       string                `json:"lastContact"`
+	MDM               *SystemMDM            `json:"mdm"`
+	FDE               *SystemFDE            `json:"fde"`
+	PrimarySystemUser *PrimarySystemUserRef `json:"primarySystemUser"`
+}
+
+// OSVersionDetail is the agent's structured OS version report.
+type OSVersionDetail struct {
+	OSName  string `json:"osName"`
+	Version string `json:"version"`
+}
+
+// SystemFDE is the agent's full-disk-encryption report. Active is a pointer
+// because an absent reading is unknown, not unencrypted. keyPresent is not
+// modeled: key escrow is not evidence of encryption.
+type SystemFDE struct {
+	Active *bool `json:"active"`
+}
+
+// PrimarySystemUserRef identifies the device's designated primary user.
+type PrimarySystemUserRef struct {
+	ID string `json:"id"`
+}
+
+// OSVersionString returns the reported OS version, preferring the top-level
+// field and falling back to the structured detail.
+func (s *System) OSVersionString() string {
+	if s.Version != "" {
+		return s.Version
+	}
+	if s.OSVersionDetail != nil {
+		return s.OSVersionDetail.Version
+	}
+	return ""
 }
 
 // SystemMDM holds MDM enrollment info for a system. The shape varies by
@@ -185,8 +219,8 @@ type AuthPolicyEffect struct {
 
 // PolicyObligations holds MFA and other requirements.
 type PolicyObligations struct {
-	MFA              *PolicyMFA       `json:"mfa"`
-	MFAFactors       []MFAFactorEntry `json:"mfaFactors"`
+	MFA              *PolicyMFA        `json:"mfa"`
+	MFAFactors       []MFAFactorEntry  `json:"mfaFactors"`
 	UserVerification *UserVerification `json:"userVerification"`
 }
 
@@ -252,6 +286,61 @@ func rawContainsDeviceManaged(raw json.RawMessage) bool {
 	}
 
 	return false
+}
+
+// System Insights rows (V2 /systeminsights/<table>). Each table is an
+// osquery-backed snapshot with one or more rows per system. Nullable columns
+// are pointers so a missing reading stays distinguishable from zero/false.
+
+// InsightBitLocker is a row from /systeminsights/bitlocker_info.
+// protection_status and conversion_status follow Win32_EncryptableVolume:
+// protection 0=off, 1=on, 2=unknown; conversion 0=fully decrypted,
+// 1=fully encrypted, 2=encrypting, 3=decrypting, 4=encryption paused,
+// 5=decryption paused.
+type InsightBitLocker struct {
+	SystemID         string  `json:"system_id"`
+	CollectionTime   string  `json:"collection_time"`
+	DriveLetter      *string `json:"drive_letter"`
+	ProtectionStatus *int    `json:"protection_status"`
+	ConversionStatus *int    `json:"conversion_status"`
+}
+
+// InsightALF is a row from /systeminsights/alf (macOS Application Layer
+// Firewall). global_state: 0=off, 1=on, 2=on and blocking all incoming.
+type InsightALF struct {
+	SystemID       string `json:"system_id"`
+	CollectionTime string `json:"collection_time"`
+	GlobalState    *int   `json:"global_state"`
+}
+
+// InsightWindowsSecurityCenter is a row from
+// /systeminsights/windows_security_center. Health strings are Windows
+// Security Center states: Good, Poor, Snoozed, Not Monitored, Error.
+type InsightWindowsSecurityCenter struct {
+	SystemID       string  `json:"system_id"`
+	CollectionTime string  `json:"collection_time"`
+	Firewall       *string `json:"firewall"`
+}
+
+// InsightWindowsSecurityProduct is a row from
+// /systeminsights/windows_security_products. remediation_path is
+// deliberately not modeled.
+type InsightWindowsSecurityProduct struct {
+	SystemID           string   `json:"system_id"`
+	CollectionTime     string   `json:"collection_time"`
+	Type               *string  `json:"type"`
+	State              *string  `json:"state"`
+	SignaturesUpToDate *float64 `json:"signatures_up_to_date"`
+}
+
+// InsightUser is a row from /systeminsights/users. Home directory, shell,
+// and other account detail are deliberately not modeled.
+type InsightUser struct {
+	SystemID       string  `json:"system_id"`
+	CollectionTime string  `json:"collection_time"`
+	Username       *string `json:"username"`
+	UID            *string `json:"uid"`
+	Admin          *bool   `json:"admin"`
 }
 
 // DirectoryInsightsEvent represents a single event from the Directory Insights API.

@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
+	"time"
 
 	"github.com/locktivity/epack-collector-jumpcloud/internal/collector"
 	"github.com/locktivity/epack-collector-jumpcloud/internal/jumpcloud"
@@ -31,9 +33,15 @@ func run(ctx componentsdk.CollectorContext) error {
 		return componentsdk.NewConfigError("org_id: %s", err)
 	}
 
+	maxAgeHours, err := getOptionalWholeNumber(cfg, "max_observation_age_hours", 1, 8760)
+	if err != nil {
+		return componentsdk.NewConfigError("max_observation_age_hours: %s", err)
+	}
+
 	config := collector.Config{
-		OrgID:    orgID,
-		OnStatus: ctx.Status,
+		OrgID:             orgID,
+		MaxObservationAge: time.Duration(maxAgeHours) * time.Hour,
+		OnStatus:          ctx.Status,
 	}
 
 	apiKey := ctx.Secret("JUMPCLOUD_API_KEY")
@@ -61,6 +69,14 @@ func run(ctx componentsdk.CollectorContext) error {
 			Data:   idpPosture,
 			Schema: "evidencepack/idp-posture@v1",
 			Path:   "artifacts/jumpcloud.idp-posture.json",
+		})
+	}
+
+	if endpointPosture := posture.ToEndpointPosture(); endpointPosture != nil {
+		artifacts = append(artifacts, componentsdk.CollectedArtifact{
+			Data:   endpointPosture,
+			Schema: "evidencepack/endpoint-posture@v1",
+			Path:   "artifacts/jumpcloud.endpoint-posture.json",
 		})
 	}
 
@@ -117,4 +133,26 @@ func getOptionalString(cfg map[string]any, key string) (string, error) {
 		return "", fmt.Errorf("must be a string, got %T", raw)
 	}
 	return v, nil
+}
+
+// getOptionalWholeNumber extracts a whole number within [min, max]. Zero
+// means the key was absent. Config arrives as JSON, so numbers are float64.
+func getOptionalWholeNumber(cfg map[string]any, key string, min, max int) (int, error) {
+	raw, exists := cfg[key]
+	if !exists || raw == nil {
+		return 0, nil
+	}
+	var v float64
+	switch n := raw.(type) {
+	case float64:
+		v = n
+	case int:
+		v = float64(n)
+	default:
+		return 0, fmt.Errorf("must be a number, got %T", raw)
+	}
+	if v != math.Trunc(v) || v < float64(min) || v > float64(max) {
+		return 0, fmt.Errorf("must be a whole number from %d to %d", min, max)
+	}
+	return int(v), nil
 }

@@ -22,6 +22,9 @@ const (
 	requestTimeout = 30 * time.Second
 	maxPerPage     = 100
 	maxResults     = 50000
+
+	insightsPageSize = 1000
+	maxInsightRows   = 250000
 )
 
 var (
@@ -331,6 +334,49 @@ func (c *Client) ListAuthPolicies(ctx context.Context) ([]AuthPolicy, bool, erro
 		}
 		skip = len(all)
 	}
+}
+
+// listInsights pages through a System Insights table. Insights tables hold
+// several rows per system, so the row cap is higher than the entity cap.
+// capped is true when the cap stopped pagination before the last page.
+func listInsights[T any](ctx context.Context, c *Client, table string) ([]T, bool, error) {
+	var all []T
+	skip := 0
+	for {
+		var page []T
+		path := fmt.Sprintf("/api/v2/systeminsights/%s?skip=%d&limit=%d", table, skip, insightsPageSize)
+		if err := c.consoleGet(ctx, path, &page); err != nil {
+			return nil, false, fmt.Errorf("listing system insights %s: %w", table, err)
+		}
+		all = append(all, page...)
+		if len(page) < insightsPageSize {
+			return all, false, nil
+		}
+		if len(all) >= maxInsightRows {
+			return all, true, nil
+		}
+		skip = len(all)
+	}
+}
+
+func (c *Client) ListBitLockerInfo(ctx context.Context) ([]InsightBitLocker, bool, error) {
+	return listInsights[InsightBitLocker](ctx, c, "bitlocker_info")
+}
+
+func (c *Client) ListALF(ctx context.Context) ([]InsightALF, bool, error) {
+	return listInsights[InsightALF](ctx, c, "alf")
+}
+
+func (c *Client) ListWindowsSecurityCenter(ctx context.Context) ([]InsightWindowsSecurityCenter, bool, error) {
+	return listInsights[InsightWindowsSecurityCenter](ctx, c, "windows_security_center")
+}
+
+func (c *Client) ListWindowsSecurityProducts(ctx context.Context) ([]InsightWindowsSecurityProduct, bool, error) {
+	return listInsights[InsightWindowsSecurityProduct](ctx, c, "windows_security_products")
+}
+
+func (c *Client) ListInsightUsers(ctx context.Context) ([]InsightUser, bool, error) {
+	return listInsights[InsightUser](ctx, c, "users")
 }
 
 // QueryEvents queries Directory Insights events. Uses the dedicated insights
