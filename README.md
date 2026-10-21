@@ -94,17 +94,18 @@ When `org_id` is set, the collector validates it against the organization list. 
 
 ## Authentication
 
-Set `JUMPCLOUD_API_KEY` to a JumpCloud API key.
+Set `JUMPCLOUD_API_KEY` to a JumpCloud API key. Either kind works; both are sent in the `x-api-key` header.
 
-Generate one in the JumpCloud Admin Portal under your username > API Settings.
+- **Service account (recommended):** in the Admin Portal, go to Settings > Service Accounts > + New, choose the Read Only role, and select API keys as the key type. The key is not tied to any one administrator. Service accounts cannot read `/api/organizations`, so the detailed artifact omits `org_id` and records a warning. Service accounts are not available to MSP organizations.
+- **Personal API key:** click your account name in the bottom-left of the Admin Portal and choose My API Key. API access must first be enabled by an Administrator with Billing. Generating a new key revokes the previous one, and the key carries that administrator's full permissions.
 
 ### Required permissions
 
 The API key needs read access to:
 - System users (`/api/systemusers`)
 - Applications (`/api/applications`)
-- Organizations (`/api/organizations`)
-- Administrators (`/api/administrators`)
+- Organizations (`/api/organizations`, optional)
+- Admin Portal administrators (`/api/users`)
 - Systems (`/api/systems`)
 - User groups and system groups (`/api/v2/usergroups`, `/api/v2/systemgroups`)
 - Authentication policies (`/api/v2/authn/policies`)

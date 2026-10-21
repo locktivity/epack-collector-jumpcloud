@@ -232,7 +232,7 @@ func (c *Client) ListAdministrators(ctx context.Context) ([]Administrator, int, 
 			TotalCount int             `json:"totalCount"`
 			Results    []Administrator `json:"results"`
 		}
-		path := fmt.Sprintf("/api/administrators?skip=%d&limit=%d", skip, maxPerPage)
+		path := fmt.Sprintf("/api/users?skip=%d&limit=%d", skip, maxPerPage)
 		if err := c.consoleGet(ctx, path, &page); err != nil {
 			return nil, 0, fmt.Errorf("listing administrators: %w", err)
 		}

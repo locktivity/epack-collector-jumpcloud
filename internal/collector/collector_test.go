@@ -143,9 +143,9 @@ func richMock() *mockClient {
 		},
 		org: &jumpcloud.Organization{ID: "org-1", DisplayName: "Test Org"},
 		admins: []jumpcloud.Administrator{
-			{ID: "a1", Email: "admin@co.com", TOTPEnabled: true, RoleName: "Administrator With Billing"},
-			{ID: "a2", Email: "admin2@co.com", TOTPEnabled: false, RoleName: "Administrator"},
-			{ID: "a3", Email: "helpdesk@co.com", TOTPEnabled: true, RoleName: "Help Desk"},
+			{ID: "a1", Email: "admin@co.com", TOTPEnrolled: true, RoleName: "Administrator With Billing"},
+			{ID: "a2", Email: "admin2@co.com", TOTPEnrolled: false, RoleName: "Administrator"},
+			{ID: "a3", Email: "helpdesk@co.com", TOTPEnrolled: true, RoleName: "Help Desk"},
 		},
 		systems: []jumpcloud.System{
 			{ID: "s1", Hostname: "mac-1", OS: "Mac OS X", Active: true,

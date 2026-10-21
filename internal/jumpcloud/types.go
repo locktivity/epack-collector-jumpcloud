@@ -86,12 +86,13 @@ type Organization struct {
 	DisplayName string `json:"displayName"`
 }
 
-// Administrator represents a JumpCloud admin portal administrator.
+// Administrator is an Admin Portal administrator from V1 /api/users, which
+// lists administrators (directory users are /api/systemusers).
 type Administrator struct {
 	ID                string `json:"_id"`
 	Email             string `json:"email"`
 	EnableMultiFactor bool   `json:"enableMultiFactor"`
-	TOTPEnabled       bool   `json:"totpEnabled"`
+	TOTPEnrolled      bool   `json:"totpEnrolled"`
 	RoleName          string `json:"roleName"`
 	Created           string `json:"created"`
 }

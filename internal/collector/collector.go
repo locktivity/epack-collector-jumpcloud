@@ -276,7 +276,7 @@ func computeAdminMetrics(admins []jumpcloud.Administrator, partial bool) *AdminM
 	mfaCount := 0
 	superCount := 0
 	for _, a := range admins {
-		if a.TOTPEnabled || a.EnableMultiFactor {
+		if a.TOTPEnrolled || a.EnableMultiFactor {
 			mfaCount++
 		}
 		if isSuperAdmin(a.RoleName) {

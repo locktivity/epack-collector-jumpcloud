@@ -152,6 +152,28 @@ func TestClient_ListSystems_V1Envelope(t *testing.T) {
 	}
 }
 
+// Admin Portal administrators are V1 /api/users; /api/administrators does not exist.
+func TestClient_ListAdministrators_UsesUsersEndpoint(t *testing.T) {
+	var gotPath string
+	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"totalCount":1,"results":[
+			{"_id":"a1","email":"admin@co.com","enableMultiFactor":false,"totpEnrolled":true,"roleName":"Administrator With Billing"}
+		]}`))
+	})
+
+	admins, total, err := client.ListAdministrators(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != "/api/users" {
+		t.Errorf("path = %q, want /api/users", gotPath)
+	}
+	if total != 1 || len(admins) != 1 || !admins[0].TOTPEnrolled || admins[0].RoleName != "Administrator With Billing" {
+		t.Errorf("admins = %+v (total %d)", admins, total)
+	}
+}
+
 func TestClient_ListSystems_EndpointFields(t *testing.T) {
 	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"totalCount":2,"results":[
