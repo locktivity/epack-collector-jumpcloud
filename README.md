@@ -41,7 +41,7 @@ When device discovery is incomplete, fleet totals, percentages, and coverage are
 
 ### Collection levels
 
-Set the collection level in your pipeline configuration. This controls what data is gathered and how much detail is disclosed.
+Set the collection level with the `level` config key (default `trust`). This controls what data is gathered and how much detail is disclosed.
 
 | Surface | Trust | Audit | Internal |
 |---------|-------|-------|----------|
@@ -77,19 +77,61 @@ Each paginated API surface has an internal safety cap (50,000 rows). When discov
 
 ## Quick start
 
-```yaml
-collectors:
-  - name: jumpcloud
-    config:
-      org_id: ""  # optional, for MSP multi-tenant scenarios
-    secrets:
-      JUMPCLOUD_API_KEY: ${JUMPCLOUD_API_KEY}
+1. Install the epack CLI: `brew install locktivity/tap/epack`.
+2. Create a JumpCloud API key. A read-only service account is recommended; see [Authentication](#authentication).
+3. In an empty directory, save this as `epack.yaml`:
+
+   ```yaml
+   stream: example/jumpcloud-posture
+
+   collectors:
+     jumpcloud:
+       source: locktivity/epack-collector-jumpcloud@^0.1
+       config:
+         level: trust  # trust, audit, or internal
+       secrets:
+         - JUMPCLOUD_API_KEY
+   ```
+
+   `collectors` is a mapping keyed by collector name. `secrets` lists the names of environment variables to pass to the collector, never their values.
+
+4. Run the collection. `read -rs` keeps the key out of your shell history:
+
+   ```bash
+   read -rs JUMPCLOUD_API_KEY && export JUMPCLOUD_API_KEY
+   epack lock
+   epack collect
+   ```
+
+   `epack lock` resolves and pins the collector release in `epack.lock.yaml`. `epack collect` writes an `evidence-<timestamp>.epack` file containing `artifacts/jumpcloud.json`, `artifacts/jumpcloud.idp-posture.json`, and `artifacts/jumpcloud.endpoint-posture.json`. Inspect it with `epack inspect <file>`.
+
+### Running a local build
+
+To run a binary you built instead of a published release, replace `source` with `binary`. The path must be absolute:
+
+```bash
+make build
 ```
+
+```yaml
+stream: example/jumpcloud-posture
+
+collectors:
+  jumpcloud:
+    binary: /absolute/path/to/epack-collector-jumpcloud
+    config:
+      level: trust
+    secrets:
+      - JUMPCLOUD_API_KEY
+```
+
+Then run `epack lock` and `epack collect` as above.
 
 ## Configuration
 
 | Key | Required | Description |
 |-----|----------|-------------|
+| `level` | No | Collection detail: `trust`, `audit`, or `internal`. See [Collection levels](#collection-levels). |
 | `org_id` | No | JumpCloud organization ID (string). Required for MSP/multi-tenant setups where the API key has access to multiple organizations. Must be a string; a non-string value is rejected. |
 | `max_observation_age_hours` | No | How old device telemetry may be and still count as a current reading. Whole number from 1 to 8760. Default 168 (7 days). |
 
