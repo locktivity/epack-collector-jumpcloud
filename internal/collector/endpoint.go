@@ -108,7 +108,7 @@ type endpointInputs struct {
 	now         time.Time
 	maxAge      time.Duration
 
-	fdeConflicts map[string]bool
+	conflicts map[string]recordConflict
 
 	bitlocker    *insightSource[jumpcloud.InsightBitLocker]
 	alf          *insightSource[jumpcloud.InsightALF]
@@ -185,8 +185,8 @@ type evaluatedDevice struct {
 // fetched for the detailed artifact. It is independent of user discovery:
 // an empty or partial user population never suppresses device evidence.
 func buildEndpointPosture(in endpointInputs) *EndpointPosture {
-	systems, fdeConflicts := reconcileSystems(in.systems, in.now)
-	in.fdeConflicts = fdeConflicts
+	systems, conflicts := reconcileSystems(in.systems, in.now)
+	in.conflicts = conflicts
 	complete := len(systems) >= in.serverTotal
 
 	ep := &EndpointPosture{
@@ -235,9 +235,9 @@ func buildEndpointPosture(in endpointInputs) *EndpointPosture {
 // reconcileSystems collapses duplicate records for one device ID without
 // letting input order decide the result. The record with the newest valid
 // lastContact wins. Without a single newest record, fields the candidates
-// disagree on are cleared to unknown, and fdeConflicts marks devices whose
-// encryption readings disagreed.
-func reconcileSystems(systems []jumpcloud.System, now time.Time) ([]*jumpcloud.System, map[string]bool) {
+// disagree on are cleared to unknown, and the returned conflicts record which
+// fields disagreed so evaluators do not mistake a cleared field for absence.
+func reconcileSystems(systems []jumpcloud.System, now time.Time) ([]*jumpcloud.System, map[string]recordConflict) {
 	groups := make(map[string][]*jumpcloud.System)
 	for i := range systems {
 		if s := &systems[i]; s.ID != "" {
@@ -251,7 +251,7 @@ func reconcileSystems(systems []jumpcloud.System, now time.Time) ([]*jumpcloud.S
 	sort.Strings(ids)
 
 	out := make([]*jumpcloud.System, 0, len(ids))
-	fdeConflicts := make(map[string]bool)
+	conflicts := make(map[string]recordConflict)
 	for _, id := range ids {
 		candidates := newestRecords(groups[id], now)
 		if len(candidates) == 1 {
@@ -260,19 +260,30 @@ func reconcileSystems(systems []jumpcloud.System, now time.Time) ([]*jumpcloud.S
 		}
 		sort.Slice(candidates, func(i, j int) bool { return canonicalJSON(candidates[i]) < canonicalJSON(candidates[j]) })
 		merged := *candidates[0]
+		var conflict recordConflict
 		if !agree(candidates, fdeState) {
 			merged.FDE = nil
-			fdeConflicts[id] = true
+			conflict.fde = true
 		}
 		if !agree(candidates, func(s *jumpcloud.System) string { return fmt.Sprint(s.HasMDM()) }) {
 			merged.MDM = nil
 		}
 		if !agree(candidates, osFamily) {
 			merged.OS, merged.OSFamily = "", ""
+			conflict.os = true
+		}
+		if conflict != (recordConflict{}) {
+			conflicts[id] = conflict
 		}
 		out = append(out, &merged)
 	}
-	return out, fdeConflicts
+	return out, conflicts
+}
+
+// recordConflict marks fields that equally fresh duplicate records disagreed on.
+type recordConflict struct {
+	fde bool
+	os  bool
 }
 
 func newestRecords(records []*jumpcloud.System, now time.Time) []*jumpcloud.System {
@@ -318,16 +329,21 @@ func canonicalJSON(s *jumpcloud.System) string {
 func evaluateDevice(s *jumpcloud.System, in endpointInputs) evaluatedDevice {
 	family := osFamily(s)
 	installed, healthy := evalAntimalware(s, family, in)
-	return evaluatedDevice{
-		system: s,
-		family: family,
-		controls: map[string]controlResult{
-			controlDiskEncryption:       evalDiskEncryption(s, family, in),
-			controlFirewall:             evalFirewall(s, family, in),
-			controlAntimalwareInstalled: installed,
-			controlAntimalwareHealthy:   healthy,
-		},
+	controls := map[string]controlResult{
+		controlDiskEncryption:       evalDiskEncryption(s, family, in),
+		controlFirewall:             evalFirewall(s, family, in),
+		controlAntimalwareInstalled: installed,
+		controlAntimalwareHealthy:   healthy,
 	}
+	if in.conflicts[s.ID].os {
+		for name, r := range controls {
+			if r.state == stateUnknown && r.reason == "" {
+				r.reason = reasonSourceError
+				controls[name] = r
+			}
+		}
+	}
+	return evaluatedDevice{system: s, family: family, controls: controls}
 }
 
 func applyFleetMetrics(ep *EndpointPosture, devices []evaluatedDevice) {
@@ -523,6 +539,11 @@ func applyDeviceInventory(ep *EndpointPosture, devices []evaluatedDevice, in end
 // suspended protection, which the agent's fde.active flag does not. Without
 // a usable BitLocker reading, a fresh fde.active=false is still a failure.
 func evalDiskEncryption(s *jumpcloud.System, family string, in endpointInputs) controlResult {
+	// Conflicting OS records leave no way to choose between the BitLocker and
+	// fde.active evaluators, and the wrong one can pass suspended protection.
+	if in.conflicts[s.ID].os {
+		return unknownBecause(reasonSourceError)
+	}
 	if family != "windows" {
 		return fdeResult(s, in)
 	}
@@ -540,7 +561,7 @@ func evalDiskEncryption(s *jumpcloud.System, family string, in endpointInputs) c
 // observation time, so it is accepted only from devices whose last agent
 // contact is within the age limit, and no observed_at is reported.
 func fdeResult(s *jumpcloud.System, in endpointInputs) controlResult {
-	if in.fdeConflicts[s.ID] {
+	if in.conflicts[s.ID].fde {
 		return unknownBecause(reasonSourceError)
 	}
 	if !isFresh(s.LastContact, in) {

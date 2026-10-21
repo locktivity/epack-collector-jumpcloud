@@ -35,7 +35,7 @@ Readings older than `max_observation_age_hours` (default 168) are unknown. `fde.
 
 Not measured, and always listed in `availability`: screen lock, EDR, OS support and patch baselines, and overall compliance. Firewall and antimalware on Linux and mobile devices are reported as unknown.
 
-Anything else is unknown: unrecognized or "Unknown" states, products without a recognized type, Windows devices whose volumes disagree (BitLocker does not say which volume holds Windows), and every reading from a System Insights table that hit the row cap. Duplicate device records resolve to the one with the newest `lastContact`; equally fresh records that disagree make the affected readings unknown. A device with any local account missing its admin flag has no `local_admin_accounts` list.
+Anything else is unknown: unrecognized or "Unknown" states, products without a recognized type, Windows devices whose volumes disagree (BitLocker does not say which volume holds Windows), and every reading from a System Insights table that hit the row cap. Duplicate device records resolve to the one with the newest `lastContact`; equally fresh records that disagree make the affected readings unknown, and a disagreement on OS makes every control for that device unknown. A device with any local account missing its admin flag has no `local_admin_accounts` list.
 
 When device discovery is incomplete, fleet totals, percentages, and coverage are omitted, `scope.discovery_complete` is `false`, and each metric is listed as `partial`.
 

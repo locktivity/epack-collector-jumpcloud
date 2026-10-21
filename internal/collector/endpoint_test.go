@@ -422,6 +422,40 @@ func TestEndpoint_DuplicateRecordsReconcileIndependentOfOrder(t *testing.T) {
 	}
 }
 
+func TestEndpoint_ConflictingOSRecordsCannotBypassBitLocker(t *testing.T) {
+	seen := testNow.Add(-time.Hour)
+	win := windowsSystem("d", seen)
+	win.FDE = &jumpcloud.SystemFDE{Active: boolPtr(true)}
+	mac := macWithFDE("d", boolPtr(true), seen)
+	suspended := bitlockerSource(jumpcloud.InsightBitLocker{SystemID: "d", CollectionTime: insightTime(seen),
+		DriveLetter: strPtr("C:"), ProtectionStatus: intPtr(0), ConversionStatus: intPtr(1)})
+
+	alone := inputs(componentsdk.LevelTrust, win)
+	alone.bitlocker = suspended
+	if got := buildEndpointPosture(alone).MetricCoverage["hardening.disk_encryption_pct"]; got.FailingDevicesCount != 1 {
+		t.Fatalf("the Windows record alone should fail on suspended BitLocker, got %+v", got)
+	}
+
+	for name, systems := range map[string][]jumpcloud.System{"windows first": {win, mac}, "macos first": {mac, win}} {
+		in := inputs(componentsdk.LevelTrust, systems...)
+		in.serverTotal = 1
+		in.bitlocker = suspended
+		ep := buildEndpointPosture(in)
+
+		if ep.Hardening != nil && ep.Hardening.DiskEncryptionPct != nil {
+			t.Errorf("%s: an OS conflict must not produce an encryption percentage, got %v", name, *ep.Hardening.DiskEncryptionPct)
+		}
+		if got := ep.MetricCoverage["hardening.disk_encryption_pct"]; got != (MetricCoverage{UnknownDevicesCount: 1}) {
+			t.Errorf("%s: coverage = %+v, want the device unknown", name, got)
+		}
+		for _, path := range []string{"hardening.disk_encryption_pct", "hardening.firewall_enabled_pct", "protection.antimalware_installed_pct"} {
+			if !availabilityHas(ep, path, reasonSourceError) {
+				t.Errorf("%s: %s should explain the conflict as a source_error", name, path)
+			}
+		}
+	}
+}
+
 func endpointMock() *mockClient {
 	recent := insightTime(time.Now().Add(-time.Hour))
 	seen := rfc(time.Now().Add(-30 * time.Minute))
