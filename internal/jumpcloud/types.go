@@ -301,6 +301,7 @@ func rawContainsDeviceManaged(raw json.RawMessage) bool {
 type InsightBitLocker struct {
 	SystemID         string  `json:"system_id"`
 	CollectionTime   string  `json:"collection_time"`
+	DeviceID         *string `json:"device_id"`
 	DriveLetter      *string `json:"drive_letter"`
 	ProtectionStatus *int    `json:"protection_status"`
 	ConversionStatus *int    `json:"conversion_status"`

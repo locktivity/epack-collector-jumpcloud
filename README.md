@@ -24,16 +24,18 @@ Every percentage is `passing / (passing + failing)` over in-scope devices, with 
 
 | Control | Source | Pass | Fail |
 |---------|--------|------|------|
-| Disk encryption (Windows) | System Insights `bitlocker_info`, C: volume | Protection on and fully encrypted | Protection off (including suspended), or not fully encrypted |
+| Disk encryption (Windows) | System Insights `bitlocker_info`, every volume | Every volume has protection on and is fully encrypted | Every volume has protection off (including suspended) or is not fully encrypted |
 | Disk encryption (other OSes) | Agent `fde.active` on `/api/systems` | `true` | `false` |
 | Firewall (macOS) | System Insights `alf` | `global_state` 1 or 2 | `global_state` 0 |
 | Firewall (Windows) | System Insights `windows_security_center` | `Good` | `Poor` |
-| Antimalware installed (Windows) | System Insights `windows_security_products` | An antivirus product is registered | Fresh enumeration lists no antivirus product |
-| Antimalware healthy (Windows) | System Insights `windows_security_products` | An antivirus product is on with current signatures | Every antivirus product is off or has outdated signatures |
+| Antimalware installed (Windows) | System Insights `windows_security_products` | An antivirus product is registered | A fresh, fully classified product list has no antivirus product |
+| Antimalware healthy (Windows) | System Insights `windows_security_products` | An antivirus product is on with current signatures | Every antivirus product is off, snoozed, expired, or has outdated signatures, and every product is classified |
 
 Readings older than `max_observation_age_hours` (default 168) are unknown. `fde.active` has no observation time, so it is only accepted from devices whose last agent check-in is within the limit, and no `observed_at` is reported for it. On Windows, a fresh `fde.active=false` is used as a failure when there is no fresh BitLocker reading.
 
 Not measured, and always listed in `availability`: screen lock, EDR, OS support and patch baselines, and overall compliance. Firewall and antimalware on Linux and mobile devices are reported as unknown.
+
+Anything else is unknown: unrecognized or "Unknown" states, products without a recognized type, Windows devices whose volumes disagree (BitLocker does not say which volume holds Windows), and every reading from a System Insights table that hit the row cap. Duplicate device records resolve to the one with the newest `lastContact`; equally fresh records that disagree make the affected readings unknown. A device with any local account missing its admin flag has no `local_admin_accounts` list.
 
 When device discovery is incomplete, fleet totals, percentages, and coverage are omitted, `scope.discovery_complete` is `false`, and each metric is listed as `partial`.
 
@@ -44,7 +46,7 @@ Set the collection level in your pipeline configuration. This controls what data
 | Surface | Trust | Audit | Internal |
 |---------|-------|-------|----------|
 | User counts and MFA adoption percentages | Yes | Yes | Yes |
-| Admin counts and admin MFA coverage | Yes | Yes | Yes |
+| Admin counts, TOTP enrollment, and MFA requirement | Yes | Yes | Yes |
 | SSO app counts and coverage | Yes | Yes | Yes |
 | Authentication policy configuration summary | Yes | Yes | Yes |
 | Device/system counts, OS breakdown, MDM enrollment | Yes | Yes | Yes |
@@ -61,6 +63,7 @@ Set the collection level in your pipeline configuration. This controls what data
 ### What it does not measure
 
 - **Login activity / inactivity**: the collector does not query per-user login timestamps, so `inactive_pct` is not emitted in the normalized artifact.
+- **Administrator MFA beyond TOTP**: JumpCloud's admin API reports TOTP enrollment and whether MFA is required, but not other factors such as security keys. The detailed artifact reports both separately, and the IDP artifact sets `privileged_mfa_coverage_pct` only when every administrator has TOTP enrolled.
 - **Effective policy enforcement**: the detailed artifact describes policy *configuration* (which policies exist, what they require). It does not evaluate effective enforcement across targets, monitoring mode, or fallback behavior. The normalized artifact omits policy and device-access claims for this reason.
 - **Complete event history**: audit event counts at the internal level summarize the fetched sample (capped at 5,000 rows). They are not necessarily complete seven-day totals.
 

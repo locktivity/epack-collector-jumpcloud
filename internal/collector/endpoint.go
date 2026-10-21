@@ -2,6 +2,8 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -106,6 +108,8 @@ type endpointInputs struct {
 	now         time.Time
 	maxAge      time.Duration
 
+	fdeConflicts map[string]bool
+
 	bitlocker    *insightSource[jumpcloud.InsightBitLocker]
 	alf          *insightSource[jumpcloud.InsightALF]
 	wsc          *insightSource[jumpcloud.InsightWindowsSecurityCenter]
@@ -126,7 +130,8 @@ func (c *Collector) fetchEndpointTelemetry(ctx context.Context, diag *diagnostic
 	var err error
 	if families["windows"] {
 		c.status("Fetching Windows device telemetry")
-		in.bitlocker, err = fetchInsight(ctx, diag, "system_insights.bitlocker_info", c.client.ListBitLockerInfo, systemDriveKey)
+		in.bitlocker, err = fetchInsight(ctx, diag, "system_insights.bitlocker_info", c.client.ListBitLockerInfo,
+			func(r jumpcloud.InsightBitLocker) string { return r.SystemID })
 		if err != nil {
 			return err
 		}
@@ -160,17 +165,6 @@ func (c *Collector) fetchEndpointTelemetry(ctx context.Context, diag *diagnostic
 	return nil
 }
 
-// systemDriveKey keeps only C: volume rows. BitLocker reports every volume,
-// and an unencrypted data or removable drive must not fail the device, nor an
-// encrypted secondary drive pass it. C: is the conventional, not guaranteed,
-// system drive.
-func systemDriveKey(r jumpcloud.InsightBitLocker) string {
-	if r.DriveLetter == nil || !strings.EqualFold(strings.TrimSpace(*r.DriveLetter), "C:") {
-		return ""
-	}
-	return r.SystemID
-}
-
 type controlResult struct {
 	state      string
 	observedAt time.Time
@@ -191,7 +185,8 @@ type evaluatedDevice struct {
 // fetched for the detailed artifact. It is independent of user discovery:
 // an empty or partial user population never suppresses device evidence.
 func buildEndpointPosture(in endpointInputs) *EndpointPosture {
-	systems := uniqueSystems(in.systems)
+	systems, fdeConflicts := reconcileSystems(in.systems, in.now)
+	in.fdeConflicts = fdeConflicts
 	complete := len(systems) >= in.serverTotal
 
 	ep := &EndpointPosture{
@@ -237,19 +232,87 @@ func buildEndpointPosture(in endpointInputs) *EndpointPosture {
 	return ep
 }
 
-func uniqueSystems(systems []jumpcloud.System) []*jumpcloud.System {
-	seen := make(map[string]bool, len(systems))
-	out := make([]*jumpcloud.System, 0, len(systems))
+// reconcileSystems collapses duplicate records for one device ID without
+// letting input order decide the result. The record with the newest valid
+// lastContact wins. Without a single newest record, fields the candidates
+// disagree on are cleared to unknown, and fdeConflicts marks devices whose
+// encryption readings disagreed.
+func reconcileSystems(systems []jumpcloud.System, now time.Time) ([]*jumpcloud.System, map[string]bool) {
+	groups := make(map[string][]*jumpcloud.System)
 	for i := range systems {
-		s := &systems[i]
-		if s.ID == "" || seen[s.ID] {
+		if s := &systems[i]; s.ID != "" {
+			groups[s.ID] = append(groups[s.ID], s)
+		}
+	}
+	ids := make([]string, 0, len(groups))
+	for id := range groups {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	out := make([]*jumpcloud.System, 0, len(ids))
+	fdeConflicts := make(map[string]bool)
+	for _, id := range ids {
+		candidates := newestRecords(groups[id], now)
+		if len(candidates) == 1 {
+			out = append(out, candidates[0])
 			continue
 		}
-		seen[s.ID] = true
-		out = append(out, s)
+		sort.Slice(candidates, func(i, j int) bool { return canonicalJSON(candidates[i]) < canonicalJSON(candidates[j]) })
+		merged := *candidates[0]
+		if !agree(candidates, fdeState) {
+			merged.FDE = nil
+			fdeConflicts[id] = true
+		}
+		if !agree(candidates, func(s *jumpcloud.System) string { return fmt.Sprint(s.HasMDM()) }) {
+			merged.MDM = nil
+		}
+		if !agree(candidates, osFamily) {
+			merged.OS, merged.OSFamily = "", ""
+		}
+		out = append(out, &merged)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
+	return out, fdeConflicts
+}
+
+func newestRecords(records []*jumpcloud.System, now time.Time) []*jumpcloud.System {
+	var newest []*jumpcloud.System
+	var at time.Time
+	for _, r := range records {
+		t, ok := parseObservationTime(r.LastContact, now)
+		switch {
+		case !ok:
+		case newest == nil || t.After(at):
+			newest, at = []*jumpcloud.System{r}, t
+		case t.Equal(at):
+			newest = append(newest, r)
+		}
+	}
+	if newest == nil {
+		return records
+	}
+	return newest
+}
+
+func agree(records []*jumpcloud.System, value func(*jumpcloud.System) string) bool {
+	for _, r := range records[1:] {
+		if value(r) != value(records[0]) {
+			return false
+		}
+	}
+	return true
+}
+
+func fdeState(s *jumpcloud.System) string {
+	if s.FDE == nil || s.FDE.Active == nil {
+		return "unknown"
+	}
+	return fmt.Sprint(*s.FDE.Active)
+}
+
+func canonicalJSON(s *jumpcloud.System) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 func evaluateDevice(s *jumpcloud.System, in endpointInputs) evaluatedDevice {
@@ -425,28 +488,45 @@ func applyDeviceInventory(ep *EndpointPosture, devices []evaluatedDevice, in end
 				returned += len(*r.LocalAdminAccounts)
 			}
 		}
+		unclassified := 0
+		for _, r := range rows {
+			if r.LocalAdminAccounts == nil {
+				unclassified++
+			}
+		}
+		sourceReason := in.insightUsers.missingReason()
 		ep.Inventories[inventoryLocalAdmins] = InventoryMeta{
-			CollectionComplete: complete && in.insightUsers != nil && in.insightUsers.missingReason() == "",
+			CollectionComplete: complete && in.insightUsers != nil && sourceReason == "" && unclassified == 0,
 			OutputTruncated:    dropped > 0,
 			ReturnedRowsCount:  returned,
 		}
-		if reason := in.insightUsers.missingReason(); reason != "" {
-			ep.Availability = append(ep.Availability, AvailabilityEntry{Path: inventoryLocalAdmins, Reason: reason})
+		switch {
+		case sourceReason != "":
+			ep.Availability = append(ep.Availability, AvailabilityEntry{Path: inventoryLocalAdmins, Reason: sourceReason})
+		case unclassified > 0:
+			ep.Availability = append(ep.Availability, AvailabilityEntry{
+				Path: inventoryLocalAdmins, Reason: reasonPartial,
+				Message: "some devices have no current account list or accounts without an admin flag",
+			})
 		}
 	}
 }
 
 // --- Control evaluation ---
+//
+// Every judge enumerates the states it recognizes as passing and failing.
+// Anything else, including values osquery reports as "Unknown", stays
+// unknown. Readings from a capped table are unknown: rows beyond the cap
+// could hold a newer observation or the row that decides the result.
 
-// evalDiskEncryption prefers the timestamped BitLocker system-drive reading
-// on Windows because it distinguishes suspended protection, which the agent's
-// fde.active flag does not. Without a fresh BitLocker reading, a fresh
-// fde.active=false is still an authoritative failure.
+// evalDiskEncryption uses BitLocker on Windows because it distinguishes
+// suspended protection, which the agent's fde.active flag does not. Without
+// a usable BitLocker reading, a fresh fde.active=false is still a failure.
 func evalDiskEncryption(s *jumpcloud.System, family string, in endpointInputs) controlResult {
 	if family != "windows" {
 		return fdeResult(s, in)
 	}
-	r := fromInsight(in.bitlocker, s.ID, in, func(r jumpcloud.InsightBitLocker) string { return r.CollectionTime }, judgeBitLocker)
+	r := evalBitLocker(s.ID, in)
 	if !r.observedAt.IsZero() {
 		return r
 	}
@@ -460,6 +540,9 @@ func evalDiskEncryption(s *jumpcloud.System, family string, in endpointInputs) c
 // observation time, so it is accepted only from devices whose last agent
 // contact is within the age limit, and no observed_at is reported.
 func fdeResult(s *jumpcloud.System, in endpointInputs) controlResult {
+	if in.fdeConflicts[s.ID] {
+		return unknownBecause(reasonSourceError)
+	}
 	if !isFresh(s.LastContact, in) {
 		return unknownBecause(reasonStale)
 	}
@@ -472,16 +555,83 @@ func fdeResult(s *jumpcloud.System, in endpointInputs) controlResult {
 	return controlResult{state: stateFail}
 }
 
+// evalBitLocker never guesses which volume holds Windows. BitLocker lists
+// every encryptable volume, the OS volume among them, so the device passes
+// only when every volume's latest reading passes and fails only when every
+// one fails. A mix, such as a protected data volume beside an unprotected
+// one, is unknown.
+func evalBitLocker(systemID string, in endpointInputs) controlResult {
+	src := in.bitlocker
+	if src == nil {
+		return unknownBecause("")
+	}
+	if src.err != nil || src.capped {
+		return unknownBecause(src.missingReason())
+	}
+	rows := src.byDevice[systemID]
+	if len(rows) == 0 {
+		return unknownBecause("")
+	}
+
+	byVolume := make(map[string][]jumpcloud.InsightBitLocker)
+	for _, r := range rows {
+		byVolume[bitlockerVolumeKey(r)] = append(byVolume[bitlockerVolumeKey(r)], r)
+	}
+	state := ""
+	staleVolume := false
+	var observed time.Time
+	for _, volumeRows := range byVolume {
+		v := fromRows(volumeRows, in, func(r jumpcloud.InsightBitLocker) string { return r.CollectionTime }, judgeBitLocker)
+		if v.observedAt.IsZero() {
+			staleVolume = true
+			continue
+		}
+		if v.observedAt.After(observed) {
+			observed = v.observedAt
+		}
+		switch {
+		case state == "":
+			state = v.state
+		case state != v.state:
+			state = stateUnknown
+		}
+	}
+	if observed.IsZero() {
+		return unknownBecause(reasonStale)
+	}
+	if staleVolume {
+		return controlResult{state: stateUnknown, observedAt: observed, reason: reasonStale}
+	}
+	return controlResult{state: state, observedAt: observed}
+}
+
+func bitlockerVolumeKey(r jumpcloud.InsightBitLocker) string {
+	if r.DeviceID != nil && strings.TrimSpace(*r.DeviceID) != "" {
+		return strings.TrimSpace(*r.DeviceID)
+	}
+	if r.DriveLetter != nil {
+		return strings.ToUpper(strings.TrimSpace(*r.DriveLetter))
+	}
+	return ""
+}
+
 // judgeBitLocker passes only a fully encrypted volume with protection on.
-// Suspended protection (protection off on an encrypted volume), partial
-// conversion, and decryption all fail.
+// Protection off (including suspended) fails, as do the recognized
+// not-fully-encrypted conversion states. Protection status 2 (unknown) and
+// unrecognized codes stay unknown.
 func judgeBitLocker(r jumpcloud.InsightBitLocker) string {
 	ps, cs := r.ProtectionStatus, r.ConversionStatus
 	if ps != nil && *ps == 1 && cs != nil && *cs == 1 {
 		return statePass
 	}
-	if (ps != nil && *ps == 0) || (cs != nil && *cs != 1) {
+	if ps != nil && *ps == 0 {
 		return stateFail
+	}
+	if cs != nil {
+		switch *cs {
+		case 0, 2, 3, 4, 5:
+			return stateFail
+		}
 	}
 	return stateUnknown
 }
@@ -524,15 +674,49 @@ func judgeWSCFirewall(r jumpcloud.InsightWindowsSecurityCenter) string {
 	return stateUnknown
 }
 
+// productKind classifies a Windows Security Center product row. Rows with a
+// missing or unrecognized type are unclassified, so they could be antivirus.
+func productKind(r jumpcloud.InsightWindowsSecurityProduct) string {
+	if r.Type == nil {
+		return ""
+	}
+	switch k := strings.ToLower(strings.TrimSpace(*r.Type)); k {
+	case "antivirus", "firewall", "antispyware":
+		return k
+	}
+	return ""
+}
+
+// productHealth is pass for a product that is on with current signatures,
+// fail for one that is off, snoozed, expired, or has outdated signatures,
+// and unknown otherwise.
+func productHealth(r jumpcloud.InsightWindowsSecurityProduct) string {
+	state := ""
+	if r.State != nil {
+		state = strings.ToLower(strings.TrimSpace(*r.State))
+	}
+	sig := r.SignaturesUpToDate
+	if state == "on" && sig != nil && *sig == 1 {
+		return statePass
+	}
+	switch {
+	case state == "off" || state == "snoozed" || state == "expired":
+		return stateFail
+	case sig != nil && *sig == 0:
+		return stateFail
+	}
+	return stateUnknown
+}
+
 // evalAntimalware reads the products registered with Windows Security
-// Center. A fresh enumeration with no antivirus product establishes absence.
-// Healthy requires a product that is on with current signatures.
+// Center. Absence, or every antivirus product being unhealthy, needs a
+// complete, fully classified snapshot of the device's products.
 func evalAntimalware(s *jumpcloud.System, family string, in endpointInputs) (controlResult, controlResult) {
 	if family != "windows" {
 		return unknownBecause(""), unknownBecause("")
 	}
 	src := in.products
-	if src == nil || src.err != nil || len(src.byDevice[s.ID]) == 0 {
+	if src == nil || src.err != nil || src.capped || len(src.byDevice[s.ID]) == 0 {
 		reason := src.missingReason()
 		return unknownBecause(reason), unknownBecause(reason)
 	}
@@ -541,40 +725,49 @@ func evalAntimalware(s *jumpcloud.System, family string, in endpointInputs) (con
 		return unknownBecause(reasonStale), unknownBecause(reasonStale)
 	}
 
+	unclassified := 0
 	var antivirus []jumpcloud.InsightWindowsSecurityProduct
 	for _, r := range latest {
-		if r.Type != nil && strings.EqualFold(strings.TrimSpace(*r.Type), "antivirus") {
+		switch productKind(r) {
+		case "antivirus":
 			antivirus = append(antivirus, r)
+		case "":
+			unclassified++
 		}
 	}
+
+	pass := controlResult{state: statePass, observedAt: at}
+	fail := controlResult{state: stateFail, observedAt: at}
+	unknown := controlResult{state: stateUnknown, observedAt: at}
+
 	if len(antivirus) == 0 {
-		fail := controlResult{state: stateFail, observedAt: at}
+		if unclassified > 0 {
+			return unknown, unknown
+		}
 		return fail, fail
 	}
 
-	installed := controlResult{state: statePass, observedAt: at}
-	allUnhealthy := true
+	allFailing := unclassified == 0
 	for _, r := range antivirus {
-		on := r.State != nil && strings.EqualFold(strings.TrimSpace(*r.State), "on")
-		off := r.State != nil && !on
-		current := r.SignaturesUpToDate != nil && *r.SignaturesUpToDate == 1
-		outdated := r.SignaturesUpToDate != nil && *r.SignaturesUpToDate == 0
-		if on && current {
-			return installed, controlResult{state: statePass, observedAt: at}
-		}
-		if !off && !outdated {
-			allUnhealthy = false
+		switch productHealth(r) {
+		case statePass:
+			return pass, pass
+		case stateUnknown:
+			allFailing = false
 		}
 	}
-	if allUnhealthy {
-		return installed, controlResult{state: stateFail, observedAt: at}
+	if allFailing {
+		return pass, fail
 	}
-	return installed, controlResult{state: stateUnknown, observedAt: at}
+	return pass, unknown
 }
 
+// localAdmins lists accounts positively flagged as local administrators. A
+// device with any account whose admin flag is missing returns nil
+// (unknown), because an unclassified account could be an administrator.
 func localAdmins(systemID string, in endpointInputs) *[]LocalAdminAccount {
 	src := in.insightUsers
-	if src == nil || src.err != nil {
+	if src == nil || src.err != nil || src.capped {
 		return nil
 	}
 	latest, _, ok := latestFresh(src.byDevice[systemID], func(r jumpcloud.InsightUser) string { return r.CollectionTime }, in)
@@ -583,7 +776,10 @@ func localAdmins(systemID string, in endpointInputs) *[]LocalAdminAccount {
 	}
 	admins := []LocalAdminAccount{}
 	for _, r := range latest {
-		if r.Admin == nil || !*r.Admin {
+		if r.Admin == nil {
+			return nil
+		}
+		if !*r.Admin {
 			continue
 		}
 		var a LocalAdminAccount
@@ -599,17 +795,21 @@ func localAdmins(systemID string, in endpointInputs) *[]LocalAdminAccount {
 	return &admins
 }
 
-// fromInsight evaluates a single-reading control from the latest fresh rows
-// for a device. Rows sharing the latest timestamp that disagree yield
-// unknown rather than picking one.
+// fromInsight evaluates a single-reading control for a device from a table.
 func fromInsight[T any](src *insightSource[T], systemID string, in endpointInputs, ts func(T) string, judge func(T) string) controlResult {
 	if src == nil {
 		return unknownBecause("")
 	}
 	rows := src.byDevice[systemID]
-	if src.err != nil || len(rows) == 0 {
+	if src.err != nil || src.capped || len(rows) == 0 {
 		return unknownBecause(src.missingReason())
 	}
+	return fromRows(rows, in, ts, judge)
+}
+
+// fromRows judges the latest fresh rows. Rows sharing the latest timestamp
+// that disagree yield unknown rather than picking one.
+func fromRows[T any](rows []T, in endpointInputs, ts func(T) string, judge func(T) string) controlResult {
 	latest, at, ok := latestFresh(rows, ts, in)
 	if !ok {
 		return unknownBecause(reasonStale)

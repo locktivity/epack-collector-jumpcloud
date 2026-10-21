@@ -273,22 +273,20 @@ func computeAdminMetrics(admins []jumpcloud.Administrator, partial bool) *AdminM
 	if len(admins) == 0 {
 		return &AdminMetrics{}
 	}
-	mfaCount := 0
-	superCount := 0
+	m := &AdminMetrics{TotalAdmins: len(admins), Partial: partial}
 	for _, a := range admins {
-		if a.TOTPEnrolled || a.EnableMultiFactor {
-			mfaCount++
+		if a.TOTPEnrolled {
+			m.TOTPEnrolledCount++
+		}
+		if a.EnableMultiFactor {
+			m.MFARequiredCount++
 		}
 		if isSuperAdmin(a.RoleName) {
-			superCount++
+			m.SuperAdminCount++
 		}
 	}
-	return &AdminMetrics{
-		TotalAdmins:         len(admins),
-		SuperAdminCount:     superCount,
-		AdminMFACoveragePct: pct(mfaCount, len(admins)),
-		Partial:             partial,
-	}
+	m.TOTPEnrolledPct = pct(m.TOTPEnrolledCount, len(admins))
+	return m
 }
 
 // isSuperAdmin returns true only for the highest-privilege JumpCloud role.

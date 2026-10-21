@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidencepack/endpoint-posture@v1",
+  "title": "Endpoint posture",
+  "description": "Normalized device management and endpoint security evidence. Every metric is optional; absent means no usable reading, and availability explains why.",
+  "type": "object",
+  "required": ["schema_version", "collected_at", "provider", "scope", "metric_coverage", "availability"],
+  "properties": {
+    "schema_version": {"type": "string", "pattern": "^1\\.\\d+\\.\\d+$"},
+    "collected_at": {"$ref": "#/$defs/timestamp"},
+    "provider": {"type": "string", "minLength": 1},
+    "organization_id": {"type": "string"},
+    "scope": {
+      "type": "object",
+      "required": ["discovery_complete", "observed_devices_count", "description", "max_observation_age_seconds"],
+      "properties": {
+        "discovery_complete": {"type": "boolean"},
+        "observed_devices_count": {"$ref": "#/$defs/count"},
+        "description": {"type": "string", "pattern": "^[a-z0-9_]+$"},
+        "max_observation_age_seconds": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "fleet": {
+      "type": "object",
+      "properties": {
+        "devices_count": {"$ref": "#/$defs/count"},
+        "managed_devices_count": {"$ref": "#/$defs/count"},
+        "mdm_enrolled_devices_count": {"$ref": "#/$defs/count"},
+        "devices_by_os": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/os_family"},
+          "additionalProperties": {"$ref": "#/$defs/count"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "compliance": {
+      "type": "object",
+      "properties": {
+        "compliant_pct": {"$ref": "#/$defs/pct"},
+        "basis": {"enum": ["provider_reported", "baseline_evaluation"]},
+        "baseline_id": {"type": "string"},
+        "baseline_version": {"type": "string"}
+      },
+      "dependentRequired": {"compliant_pct": ["basis"]},
+      "additionalProperties": false
+    },
+    "hardening": {
+      "type": "object",
+      "properties": {
+        "disk_encryption_pct": {"$ref": "#/$defs/pct"},
+        "screen_lock_compliant_pct": {"$ref": "#/$defs/pct"},
+        "firewall_enabled_pct": {"$ref": "#/$defs/pct"}
+      },
+      "additionalProperties": false
+    },
+    "patching": {
+      "type": "object",
+      "properties": {
+        "os_supported_pct": {"$ref": "#/$defs/pct"},
+        "os_baseline_compliant_pct": {"$ref": "#/$defs/pct"},
+        "unsupported_os_count": {"$ref": "#/$defs/count"},
+        "baseline_id": {"type": "string"},
+        "baseline_version": {"type": "string"}
+      },
+      "dependentRequired": {"os_baseline_compliant_pct": ["baseline_id"]},
+      "additionalProperties": false
+    },
+    "protection": {
+      "type": "object",
+      "properties": {
+        "antimalware_installed_pct": {"$ref": "#/$defs/pct"},
+        "antimalware_healthy_pct": {"$ref": "#/$defs/pct"},
+        "edr_installed_pct": {"$ref": "#/$defs/pct"},
+        "edr_healthy_pct": {"$ref": "#/$defs/pct"}
+      },
+      "additionalProperties": false
+    },
+    "metric_coverage": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/metric_path"},
+      "additionalProperties": {"$ref": "#/$defs/coverage"}
+    },
+    "availability": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "reason"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "reason": {"enum": ["unsupported", "permission_denied", "not_configured", "stale", "partial", "source_error"]},
+          "message": {"type": "string", "maxLength": 200}
+        },
+        "additionalProperties": false
+      }
+    },
+    "devices": {"type": "array", "items": {"$ref": "#/$defs/device"}},
+    "policies": {"type": "array", "items": {"$ref": "#/$defs/policy"}},
+    "threat_events": {"type": "array", "items": {"$ref": "#/$defs/threat_event"}},
+    "device_actions": {"type": "array", "items": {"$ref": "#/$defs/device_action"}},
+    "history": {
+      "type": "object",
+      "required": ["window_start", "window_end"],
+      "properties": {
+        "window_start": {"$ref": "#/$defs/timestamp"},
+        "window_end": {"$ref": "#/$defs/timestamp"}
+      },
+      "additionalProperties": false
+    },
+    "inventories": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/inventory_meta"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "timestamp": {"type": "string", "format": "date-time"},
+    "count": {"type": "integer", "minimum": 0},
+    "pct": {"type": "number", "minimum": 0, "maximum": 100},
+    "os_family": {"enum": ["windows", "macos", "linux", "ios", "ipados", "android", "chromeos", "other", "unknown"]},
+    "metric_path": {
+      "enum": [
+        "compliance.compliant_pct",
+        "hardening.disk_encryption_pct",
+        "hardening.screen_lock_compliant_pct",
+        "hardening.firewall_enabled_pct",
+        "patching.os_supported_pct",
+        "patching.os_baseline_compliant_pct",
+        "protection.antimalware_installed_pct",
+        "protection.antimalware_healthy_pct",
+        "protection.edr_installed_pct",
+        "protection.edr_healthy_pct"
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["passing_devices_count", "failing_devices_count", "unknown_devices_count", "not_applicable_devices_count"],
+      "properties": {
+        "passing_devices_count": {"$ref": "#/$defs/count"},
+        "failing_devices_count": {"$ref": "#/$defs/count"},
+        "unknown_devices_count": {"$ref": "#/$defs/count"},
+        "not_applicable_devices_count": {"$ref": "#/$defs/count"}
+      },
+      "additionalProperties": false
+    },
+    "control_key": {
+      "enum": ["disk_encryption", "screen_lock", "firewall", "os_supported", "os_baseline", "compliance",
+        "antimalware_installed", "antimalware_healthy", "edr_installed", "edr_healthy"]
+    },
+    "control": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": {"enum": ["pass", "fail", "unknown", "not_applicable"]},
+        "observed_at": {"$ref": "#/$defs/timestamp"}
+      },
+      "additionalProperties": false
+    },
+    "device": {
+      "type": "object",
+      "required": ["device_id", "os_family", "in_scope"],
+      "properties": {
+        "device_id": {"type": "string", "minLength": 1},
+        "hostname": {"type": "string"},
+        "os_family": {"$ref": "#/$defs/os_family"},
+        "os_name": {"type": "string"},
+        "os_version": {"type": "string"},
+        "assigned_user": {
+          "type": "object",
+          "required": ["user_id"],
+          "properties": {"user_id": {"type": "string"}, "login": {"type": "string"}},
+          "additionalProperties": false
+        },
+        "management_state": {"enum": ["managed", "unmanaged", "retired", "unknown"]},
+        "in_scope": {"type": "boolean"},
+        "created_at": {"$ref": "#/$defs/timestamp"},
+        "last_seen_at": {"$ref": "#/$defs/timestamp"},
+        "controls": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/control_key"},
+          "additionalProperties": {"$ref": "#/$defs/control"}
+        },
+        "local_admin_accounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {"account_id": {"type": "string"}, "username": {"type": "string"}},
+            "additionalProperties": false
+          }
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["control", "status"],
+            "properties": {
+              "finding_id": {"type": "string"},
+              "control": {"$ref": "#/$defs/control_key"},
+              "status": {"enum": ["open", "resolved", "unknown"]},
+              "first_seen_at": {"$ref": "#/$defs/timestamp"},
+              "last_seen_at": {"$ref": "#/$defs/timestamp"},
+              "resolved_at": {"$ref": "#/$defs/timestamp"},
+              "reason_code": {"type": "string"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "protection_modules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": {"enum": ["antimalware", "edr", "firewall", "device_control"]},
+              "installed": {"type": "boolean"},
+              "enabled": {"type": "boolean"},
+              "healthy": {"type": "boolean"},
+              "observed_at": {"$ref": "#/$defs/timestamp"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "prohibited_apps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": {"type": "string"}, "version": {"type": "string"}, "policy_id": {"type": "string"}},
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "required": ["policy_id", "name", "control_categories"],
+      "properties": {
+        "policy_id": {"type": "string"},
+        "name": {"type": "string"},
+        "control_categories": {
+          "type": "array",
+          "items": {"enum": ["disk_encryption", "screen_lock", "firewall", "os_patching", "antimalware", "edr", "device_control"]},
+          "uniqueItems": true
+        },
+        "assigned_devices_count": {"$ref": "#/$defs/count"}
+      },
+      "additionalProperties": false
+    },
+    "threat_event": {
+      "type": "object",
+      "required": ["event_id", "device_id", "category", "detected_at"],
+      "properties": {
+        "event_id": {"type": "string"},
+        "device_id": {"type": "string"},
+        "category": {"enum": ["malware", "ransomware", "exploit", "behavioral", "policy_violation", "other", "unknown"]},
+        "threat_name": {"type": "string"},
+        "severity": {"enum": ["informational", "low", "medium", "high", "critical", "unknown"]},
+        "action": {"type": "string"},
+        "detected_at": {"$ref": "#/$defs/timestamp"}
+      },
+      "additionalProperties": false
+    },
+    "device_action": {
+      "type": "object",
+      "required": ["device_id", "action_type", "status"],
+      "properties": {
+        "action_id": {"type": "string"},
+        "device_id": {"type": "string"},
+        "action_type": {"type": "string"},
+        "status": {"enum": ["requested", "succeeded", "failed", "unknown"]},
+        "requested_at": {"$ref": "#/$defs/timestamp"},
+        "completed_at": {"$ref": "#/$defs/timestamp"}
+      },
+      "additionalProperties": false
+    },
+    "inventory_meta": {
+      "type": "object",
+      "required": ["collection_complete", "output_truncated", "returned_rows_count"],
+      "properties": {
+        "collection_complete": {"type": "boolean"},
+        "output_truncated": {"type": "boolean"},
+        "returned_rows_count": {"$ref": "#/$defs/count"},
+        "total_rows_count": {"$ref": "#/$defs/count"},
+        "dropped_rows_count": {"$ref": "#/$defs/count"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

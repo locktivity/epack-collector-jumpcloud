@@ -84,11 +84,16 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 	}
 
 	if o.Admins != nil && o.Admins.TotalAdmins > 0 && !o.Admins.Partial {
-		adminMFAPct := o.Admins.AdminMFACoveragePct
 		posture.PrivilegedAccess = &IDPPosturePrivilegedAccess{
-			PrivilegedUsersCount:     o.Admins.TotalAdmins,
-			SuperAdminCount:          o.Admins.SuperAdminCount,
-			PrivilegedMFACoveragePct: &adminMFAPct,
+			PrivilegedUsersCount: o.Admins.TotalAdmins,
+			SuperAdminCount:      o.Admins.SuperAdminCount,
+		}
+		// Only TOTP enrollment is observable. An admin without it may still
+		// use another factor, so coverage is known only when every admin
+		// has TOTP enrolled.
+		if o.Admins.TOTPEnrolledCount == o.Admins.TotalAdmins {
+			full := 100.0
+			posture.PrivilegedAccess.PrivilegedMFACoveragePct = &full
 		}
 	}
 

@@ -38,7 +38,7 @@ func inputs(level componentsdk.Level, systems ...jumpcloud.System) endpointInput
 }
 
 func bitlockerSource(rows ...jumpcloud.InsightBitLocker) *insightSource[jumpcloud.InsightBitLocker] {
-	return newInsightSource(rows, false, systemDriveKey)
+	return newInsightSource(rows, false, func(r jumpcloud.InsightBitLocker) string { return r.SystemID })
 }
 
 func productSource(rows ...jumpcloud.InsightWindowsSecurityProduct) *insightSource[jumpcloud.InsightWindowsSecurityProduct] {
@@ -207,8 +207,20 @@ func TestEndpoint_BitLockerMapping(t *testing.T) {
 			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("C:"), ProtectionStatus: intPtr(1), ConversionStatus: intPtr(2)}}, nil, stateFail},
 		{"protection status unknown", []jumpcloud.InsightBitLocker{
 			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("C:"), ProtectionStatus: intPtr(2), ConversionStatus: intPtr(1)}}, nil, stateUnknown},
-		{"data drive does not decide the device", []jumpcloud.InsightBitLocker{
+		{"unknown protection with an unrecognized conversion code", []jumpcloud.InsightBitLocker{
+			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("C:"), ProtectionStatus: intPtr(2), ConversionStatus: intPtr(9)}}, nil, stateUnknown},
+		{"protected C: does not pass an unprotected OS volume elsewhere", []jumpcloud.InsightBitLocker{
+			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("C:"), ProtectionStatus: intPtr(1), ConversionStatus: intPtr(1)},
 			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("D:"), ProtectionStatus: intPtr(0), ConversionStatus: intPtr(0)}}, nil, stateUnknown},
+		{"every volume protected passes", []jumpcloud.InsightBitLocker{
+			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("C:"), ProtectionStatus: intPtr(1), ConversionStatus: intPtr(1)},
+			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("D:"), ProtectionStatus: intPtr(1), ConversionStatus: intPtr(1)}}, nil, statePass},
+		{"every volume unprotected fails", []jumpcloud.InsightBitLocker{
+			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("C:"), ProtectionStatus: intPtr(0), ConversionStatus: intPtr(0)},
+			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("D:"), ProtectionStatus: intPtr(0), ConversionStatus: intPtr(0)}}, nil, stateFail},
+		{"a volume with only stale readings blocks a pass", []jumpcloud.InsightBitLocker{
+			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("D:"), ProtectionStatus: intPtr(1), ConversionStatus: intPtr(1)},
+			{SystemID: "w", CollectionTime: insightTime(testNow.Add(-48 * time.Hour)), DriveLetter: strPtr("C:"), ProtectionStatus: intPtr(1), ConversionStatus: intPtr(1)}}, nil, stateUnknown},
 		{"conflicting rows at the same time are unknown", []jumpcloud.InsightBitLocker{
 			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("C:"), ProtectionStatus: intPtr(1), ConversionStatus: intPtr(1)},
 			{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("C:"), ProtectionStatus: intPtr(0), ConversionStatus: intPtr(0)}}, nil, stateUnknown},
@@ -319,6 +331,12 @@ func TestEndpoint_AntimalwareMapping(t *testing.T) {
 		{"signature state unknown", []jumpcloud.InsightWindowsSecurityProduct{av(strPtr("On"), nil)}, statePass, stateUnknown},
 		{"one healthy product among several", []jumpcloud.InsightWindowsSecurityProduct{av(strPtr("Off"), f64Ptr(0)), av(strPtr("On"), f64Ptr(1))}, statePass, statePass},
 		{"fresh enumeration without antivirus", []jumpcloud.InsightWindowsSecurityProduct{firewallOnly}, stateFail, stateFail},
+		{"osquery Unknown state is not unhealthy", []jumpcloud.InsightWindowsSecurityProduct{av(strPtr("Unknown"), f64Ptr(1))}, statePass, stateUnknown},
+		{"snoozed antivirus is unhealthy", []jumpcloud.InsightWindowsSecurityProduct{av(strPtr("Snoozed"), f64Ptr(1))}, statePass, stateFail},
+		{"missing product type does not prove absence", []jumpcloud.InsightWindowsSecurityProduct{firewallOnly,
+			{SystemID: "w", CollectionTime: recent, State: strPtr("On"), SignaturesUpToDate: f64Ptr(1)}}, stateUnknown, stateUnknown},
+		{"an unclassified product blocks an all-unhealthy verdict", []jumpcloud.InsightWindowsSecurityProduct{av(strPtr("Off"), f64Ptr(0)),
+			{SystemID: "w", CollectionTime: recent, Type: strPtr("Something Else"), State: strPtr("On")}}, statePass, stateUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -343,11 +361,64 @@ func TestEndpoint_AntimalwareMapping(t *testing.T) {
 
 func TestEndpoint_CappedTelemetryMarksMissingRowsPartial(t *testing.T) {
 	in := inputs(componentsdk.LevelTrust, windowsSystem("w", testNow.Add(-time.Hour)))
-	in.bitlocker = newInsightSource(nil, true, systemDriveKey)
+	in.bitlocker = newInsightSource[jumpcloud.InsightBitLocker](nil, true, func(r jumpcloud.InsightBitLocker) string { return r.SystemID })
 
 	got := evalDiskEncryption(&in.systems[0], "windows", in)
 	if got.state != stateUnknown || got.reason != reasonPartial {
 		t.Errorf("got %+v, want unknown/partial", got)
+	}
+}
+
+func TestEndpoint_CappedProductTableIsPartialNotZero(t *testing.T) {
+	recent := insightTime(testNow.Add(-time.Hour))
+	in := inputs(componentsdk.LevelTrust, windowsSystem("w", testNow.Add(-time.Hour)))
+	in.products = newInsightSource([]jumpcloud.InsightWindowsSecurityProduct{
+		{SystemID: "w", CollectionTime: recent, Type: strPtr("Firewall"), State: strPtr("On")},
+	}, true, func(r jumpcloud.InsightWindowsSecurityProduct) string { return r.SystemID })
+
+	ep := buildEndpointPosture(in)
+
+	if ep.Protection != nil {
+		t.Errorf("a capped table must not produce antivirus percentages: %+v", ep.Protection)
+	}
+	for _, path := range []string{"protection.antimalware_installed_pct", "protection.antimalware_healthy_pct"} {
+		if !availabilityHas(ep, path, reasonPartial) {
+			t.Errorf("missing partial availability for %s", path)
+		}
+		if cov := ep.MetricCoverage[path]; cov.UnknownDevicesCount != 1 {
+			t.Errorf("%s coverage = %+v, want the device unknown", path, cov)
+		}
+	}
+}
+
+func TestEndpoint_DuplicateRecordsReconcileIndependentOfOrder(t *testing.T) {
+	older := macWithFDE("d", boolPtr(true), testNow.Add(-6*time.Hour))
+	newer := macWithFDE("d", boolPtr(false), testNow.Add(-time.Hour))
+
+	for name, systems := range map[string][]jumpcloud.System{
+		"older first": {older, newer},
+		"newer first": {newer, older},
+	} {
+		in := inputs(componentsdk.LevelTrust, systems...)
+		in.serverTotal = 1
+		ep := buildEndpointPosture(in)
+		if got := ep.MetricCoverage["hardening.disk_encryption_pct"]; got.FailingDevicesCount != 1 || got.PassingDevicesCount != 0 {
+			t.Errorf("%s: the newest record should decide, got %+v", name, got)
+		}
+	}
+
+	seen := testNow.Add(-time.Hour)
+	a, b := macWithFDE("d", boolPtr(true), seen), macWithFDE("d", boolPtr(false), seen)
+	for name, systems := range map[string][]jumpcloud.System{"a first": {a, b}, "b first": {b, a}} {
+		in := inputs(componentsdk.LevelTrust, systems...)
+		in.serverTotal = 1
+		ep := buildEndpointPosture(in)
+		if got := ep.MetricCoverage["hardening.disk_encryption_pct"]; got.UnknownDevicesCount != 1 {
+			t.Errorf("%s: equally fresh conflicting records should be unknown, got %+v", name, got)
+		}
+		if !availabilityHas(ep, "hardening.disk_encryption_pct", reasonSourceError) {
+			t.Errorf("%s: conflicting records should be explained", name)
+		}
 	}
 }
 
@@ -436,9 +507,25 @@ func TestCollect_EndpointLevelGating(t *testing.T) {
 	if admins == nil || len(*admins) != 1 || (*admins)[0].Username != "alice" {
 		t.Errorf("mac local admins = %+v, want only alice", admins)
 	}
-	win := ep.Devices[1].LocalAdminAccounts
-	if win == nil || len(*win) != 0 {
-		t.Errorf("a missing admin flag is not admin; windows admins = %+v", win)
+	if win := ep.Devices[1].LocalAdminAccounts; win != nil {
+		t.Errorf("an account without an admin flag leaves the device unclassified; windows admins = %+v", *win)
+	}
+	if ep.Inventories[inventoryLocalAdmins].CollectionComplete {
+		t.Error("local admin inventory must be incomplete while a device is unclassified")
+	}
+	if !availabilityHas(ep, inventoryLocalAdmins, reasonPartial) {
+		t.Error("unclassified devices should be explained in availability")
+	}
+
+	m = endpointMock()
+	m.insightUsers = append(m.insightUsers[:2], jumpcloud.InsightUser{SystemID: "s-win", CollectionTime: m.insightUsers[0].CollectionTime,
+		Username: strPtr("bob"), Admin: boolPtr(false)})
+	_, ep = collectEndpoint(t, m, componentsdk.LevelInternal)
+	if win := ep.Devices[1].LocalAdminAccounts; win == nil || len(*win) != 0 {
+		t.Errorf("classified accounts with no admins should be an empty list, got %v", win)
+	}
+	if !ep.Inventories[inventoryLocalAdmins].CollectionComplete {
+		t.Error("every device classified should mark the local admin inventory complete")
 	}
 }
 

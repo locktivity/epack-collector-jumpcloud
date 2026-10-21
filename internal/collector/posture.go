@@ -61,11 +61,16 @@ type AuthenticationMetrics struct {
 }
 
 // AdminMetrics contains privileged user counts.
+// AdminMetrics separates what JumpCloud lets us observe: affirmative TOTP
+// enrollment, and whether MFA is required. Other admin factors (such as
+// WebAuthn) are not exposed, so neither field is total MFA coverage.
 type AdminMetrics struct {
-	TotalAdmins         int     `json:"total_admins"`
-	SuperAdminCount     int     `json:"super_admin_count"`
-	AdminMFACoveragePct float64 `json:"admin_mfa_coverage_pct"`
-	Partial             bool    `json:"partial,omitempty"`
+	TotalAdmins       int     `json:"total_admins"`
+	SuperAdminCount   int     `json:"super_admin_count"`
+	TOTPEnrolledCount int     `json:"totp_enrolled_count"`
+	TOTPEnrolledPct   float64 `json:"totp_enrolled_pct"`
+	MFARequiredCount  int     `json:"mfa_required_count"`
+	Partial           bool    `json:"partial,omitempty"`
 }
 
 // AppMetrics contains SSO application metrics.

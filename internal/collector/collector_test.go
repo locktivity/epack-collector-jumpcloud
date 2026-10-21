@@ -455,6 +455,31 @@ func TestToIDPPosture_Complete(t *testing.T) {
 	}
 }
 
+func TestAdminMFA_RequirementIsNotEnrollment(t *testing.T) {
+	m := richMock()
+	m.admins = []jumpcloud.Administrator{
+		{ID: "a1", EnableMultiFactor: true, TOTPEnrolled: false, RoleName: "Administrator With Billing"},
+		{ID: "a2", EnableMultiFactor: false, TOTPEnrolled: true, RoleName: "Administrator"},
+	}
+	posture, err := New(Config{}, m).Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	a := posture.Admins
+	if a.TOTPEnrolledCount != 1 || a.TOTPEnrolledPct != 50 || a.MFARequiredCount != 1 {
+		t.Errorf("admins = %+v, want 1 enrolled (50%%) and 1 required", a)
+	}
+	if pa := posture.ToIDPPosture().PrivilegedAccess; pa.PrivilegedMFACoveragePct != nil {
+		t.Errorf("coverage is unknown while an admin lacks observable enrollment, got %v", *pa.PrivilegedMFACoveragePct)
+	}
+
+	m.admins[0].TOTPEnrolled = true
+	posture, _ = New(Config{}, m).Collect(context.Background(), componentsdk.LevelTrust)
+	if pa := posture.ToIDPPosture().PrivilegedAccess; pa.PrivilegedMFACoveragePct == nil || *pa.PrivilegedMFACoveragePct != 100 {
+		t.Error("every admin enrolled should report 100% coverage")
+	}
+}
+
 func TestToIDPPosture_PartialUsersReturnsNil(t *testing.T) {
 	posture := &OrgPosture{
 		Users:          UserMetrics{Total: 100, Active: 100, Partial: true},
