@@ -113,6 +113,15 @@
       "additionalProperties": {"$ref": "#/$defs/inventory_meta"}
     }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"scope": {"properties": {"discovery_complete": {"const": false}}}}},
+      "then": {
+        "properties": {"metric_coverage": {"maxProperties": 0}},
+        "not": {"anyOf": [{"required": ["fleet"]}, {"required": ["hardening"]}, {"required": ["protection"]}, {"required": ["patching"]}, {"required": ["compliance"]}]}
+      }
+    }
+  ],
   "additionalProperties": false,
   "$defs": {
     "timestamp": {"type": "string", "format": "date-time"},

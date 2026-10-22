@@ -93,6 +93,41 @@ func TestEndpoint_OutputMeetsContract(t *testing.T) {
 	}
 }
 
+func TestEndpoint_SchemaRejectsFleetValuesWhenDiscoveryIncomplete(t *testing.T) {
+	schema := compileEndpointSchema(t)
+	partial := `{"schema_version":"1.0.0","collected_at":"2026-10-22T00:00:00Z","provider":"jumpcloud",
+		"scope":{"discovery_complete":false,"observed_devices_count":1,"description":"provider_visible_devices","max_observation_age_seconds":604800},
+		"metric_coverage":{},"availability":[]}`
+	for name, extra := range map[string]string{
+		"fleet totals":   `"fleet":{"devices_count":1}`,
+		"a percentage":   `"hardening":{"disk_encryption_pct":100}`,
+		"coverage entry": `"metric_coverage":{"hardening.disk_encryption_pct":{"passing_devices_count":1,"failing_devices_count":0,"unknown_devices_count":0,"not_applicable_devices_count":0}}`,
+	} {
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(partial), &doc); err != nil {
+			t.Fatal(err)
+		}
+		var add map[string]any
+		if err := json.Unmarshal([]byte("{"+extra+"}"), &add); err != nil {
+			t.Fatal(err)
+		}
+		for k, v := range add {
+			doc[k] = v
+		}
+		if err := schema.Validate(doc); err == nil {
+			t.Errorf("schema accepted %s on an incomplete discovery", name)
+		}
+	}
+
+	var ok map[string]any
+	if err := json.Unmarshal([]byte(partial), &ok); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.Validate(ok); err != nil {
+		t.Errorf("schema rejected a valid incomplete-discovery artifact: %v", err)
+	}
+}
+
 func contractProblems(ep *EndpointPosture, level componentsdk.Level) []string {
 	var problems []string
 	values := map[string]*float64{}
