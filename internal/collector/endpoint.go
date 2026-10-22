@@ -181,6 +181,18 @@ type evaluatedDevice struct {
 	controls map[string]controlResult
 }
 
+func (d evaluatedDevice) observations() map[string]ControlObservation {
+	out := make(map[string]ControlObservation, len(d.controls))
+	for name, r := range d.controls {
+		obs := ControlObservation{State: r.state}
+		if !r.observedAt.IsZero() {
+			obs.ObservedAt = r.observedAt.UTC().Format(time.RFC3339)
+		}
+		out[name] = obs
+	}
+	return out
+}
+
 // buildEndpointPosture assembles the endpoint artifact from data already
 // fetched for the detailed artifact. It is independent of user discovery:
 // an empty or partial user population never suppresses device evidence.
@@ -207,6 +219,11 @@ func buildEndpointPosture(in endpointInputs) *EndpointPosture {
 	devices := make([]evaluatedDevice, 0, len(systems))
 	for _, s := range systems {
 		devices = append(devices, evaluateDevice(s, in))
+	}
+
+	ep.controlsByDevice = make(map[string]map[string]ControlObservation, len(devices))
+	for _, d := range devices {
+		ep.controlsByDevice[d.system.ID] = d.observations()
 	}
 
 	if complete {
@@ -462,18 +479,11 @@ func applyDeviceInventory(ep *EndpointPosture, devices []evaluatedDevice, in end
 			InScope:         true,
 			CreatedAt:       formatObservation(s.Created, in.now),
 			LastSeenAt:      formatObservation(s.LastContact, in.now),
-			Controls:        make(map[string]ControlObservation, len(d.controls)),
 		}
 		if s.PrimarySystemUser != nil && s.PrimarySystemUser.ID != "" {
 			row.AssignedUser = &AssignedUser{UserID: s.PrimarySystemUser.ID, Login: logins[s.PrimarySystemUser.ID]}
 		}
-		for name, r := range d.controls {
-			obs := ControlObservation{State: r.state}
-			if !r.observedAt.IsZero() {
-				obs.ObservedAt = r.observedAt.UTC().Format(time.RFC3339)
-			}
-			row.Controls[name] = obs
-		}
+		row.Controls = d.observations()
 		if internal {
 			row.LocalAdminAccounts = localAdmins(s.ID, in)
 		}
@@ -950,4 +960,34 @@ func osFamily(s *jumpcloud.System) string {
 		return "linux"
 	}
 	return "other"
+}
+
+// deviceControlsFrom copies the endpoint artifact's control coverage into the
+// detailed artifact, so both report identical figures.
+func deviceControlsFrom(ep *EndpointPosture) *DeviceControls {
+	dc := &DeviceControls{
+		DiscoveryComplete:        ep.Scope.DiscoveryComplete,
+		MaxObservationAgeSeconds: ep.Scope.MaxObservationAgeSeconds,
+	}
+	if !ep.Scope.DiscoveryComplete {
+		return dc
+	}
+	summary := func(path string) *ControlSummary {
+		cov, ok := ep.MetricCoverage[path]
+		if !ok {
+			return nil
+		}
+		return &ControlSummary{
+			PassingPct:                coveragePct(cov),
+			PassingDevicesCount:       cov.PassingDevicesCount,
+			FailingDevicesCount:       cov.FailingDevicesCount,
+			UnknownDevicesCount:       cov.UnknownDevicesCount,
+			NotApplicableDevicesCount: cov.NotApplicableDevicesCount,
+		}
+	}
+	dc.DiskEncryption = summary("hardening.disk_encryption_pct")
+	dc.Firewall = summary("hardening.firewall_enabled_pct")
+	dc.AntimalwareInstalled = summary("protection.antimalware_installed_pct")
+	dc.AntimalwareHealthy = summary("protection.antimalware_healthy_pct")
+	return dc
 }

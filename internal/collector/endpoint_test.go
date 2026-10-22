@@ -692,3 +692,79 @@ func TestOSFamily(t *testing.T) {
 		}
 	}
 }
+
+func TestCollect_DetailedArtifactCarriesDeviceControls(t *testing.T) {
+	posture, ep := collectEndpoint(t, endpointMock(), componentsdk.LevelTrust)
+
+	dc := posture.DeviceControls
+	if dc == nil || !dc.DiscoveryComplete || dc.MaxObservationAgeSeconds != ep.Scope.MaxObservationAgeSeconds {
+		t.Fatalf("device_controls = %+v", dc)
+	}
+	for path, got := range map[string]*ControlSummary{
+		"hardening.disk_encryption_pct":        dc.DiskEncryption,
+		"hardening.firewall_enabled_pct":       dc.Firewall,
+		"protection.antimalware_installed_pct": dc.AntimalwareInstalled,
+		"protection.antimalware_healthy_pct":   dc.AntimalwareHealthy,
+	} {
+		cov := ep.MetricCoverage[path]
+		if got == nil {
+			t.Fatalf("%s missing from device_controls", path)
+		}
+		if got.PassingDevicesCount != cov.PassingDevicesCount || got.FailingDevicesCount != cov.FailingDevicesCount ||
+			got.UnknownDevicesCount != cov.UnknownDevicesCount || got.NotApplicableDevicesCount != cov.NotApplicableDevicesCount {
+			t.Errorf("%s counts %+v differ from endpoint coverage %+v", path, got, cov)
+		}
+	}
+	if *dc.DiskEncryption.PassingPct != *ep.Hardening.DiskEncryptionPct {
+		t.Errorf("disk encryption pct %v differs from endpoint %v", *dc.DiskEncryption.PassingPct, *ep.Hardening.DiskEncryptionPct)
+	}
+	if dc.AntimalwareInstalled.UnknownDevicesCount != 1 {
+		t.Errorf("the macOS device has no antimalware source and must count as unknown: %+v", dc.AntimalwareInstalled)
+	}
+
+	data, _ := json.Marshal(posture)
+	if posture.DeviceInventory != nil || strings.Contains(string(data), "s-mac") {
+		t.Error("trust detailed output must not carry device identity")
+	}
+}
+
+func TestCollect_DeviceControlsOmittedWhenDiscoveryIncomplete(t *testing.T) {
+	m := endpointMock()
+	m.sysTotal = 9
+	posture, _ := collectEndpoint(t, m, componentsdk.LevelTrust)
+
+	dc := posture.DeviceControls
+	if dc == nil || dc.DiscoveryComplete {
+		t.Fatalf("device_controls should report incomplete discovery: %+v", dc)
+	}
+	if dc.DiskEncryption != nil || dc.Firewall != nil || dc.AntimalwareInstalled != nil || dc.AntimalwareHealthy != nil {
+		t.Errorf("no fleet figures for a partial fleet: %+v", dc)
+	}
+}
+
+func TestCollect_DeviceInventoryRowsCarryControls(t *testing.T) {
+	posture, ep := collectEndpoint(t, endpointMock(), componentsdk.LevelAudit)
+
+	byID := map[string]EndpointDevice{}
+	for _, d := range ep.Devices {
+		byID[d.DeviceID] = d
+	}
+	rows := posture.DeviceInventory.PerDevice
+	if len(rows) != 2 {
+		t.Fatalf("device inventory rows = %d, want 2", len(rows))
+	}
+	for _, row := range rows {
+		want, ok := byID[row.DeviceID]
+		if !ok {
+			t.Fatalf("inventory row %q has no matching endpoint device", row.DeviceID)
+		}
+		if len(row.Controls) != len(want.Controls) {
+			t.Errorf("%s controls = %v, want %v", row.DeviceID, row.Controls, want.Controls)
+		}
+		for name, obs := range want.Controls {
+			if row.Controls[name] != obs {
+				t.Errorf("%s %s = %+v, want %+v", row.DeviceID, name, row.Controls[name], obs)
+			}
+		}
+	}
+}

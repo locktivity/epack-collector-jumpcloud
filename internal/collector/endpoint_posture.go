@@ -18,6 +18,10 @@ type EndpointPosture struct {
 
 	Devices     []EndpointDevice         `json:"devices,omitempty"`
 	Inventories map[string]InventoryMeta `json:"inventories,omitempty"`
+
+	// controlsByDevice holds every device's readings for the detailed
+	// artifact's inventory; it is not serialized.
+	controlsByDevice map[string]map[string]ControlObservation
 }
 
 type EndpointScope struct {

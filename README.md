@@ -50,10 +50,11 @@ Set the collection level with the `level` config key (default `trust`). This con
 | SSO app counts and coverage | Yes | Yes | Yes |
 | Authentication policy configuration summary | Yes | Yes | Yes |
 | Device/system counts, OS breakdown, MDM enrollment | Yes | Yes | Yes |
+| Device controls (encryption, firewall, antimalware): percentage with passing, failing, unknown, and not-applicable device counts | Yes | Yes | Yes |
 | Per-user inventory (username, email, state, MFA status) | | Yes | Yes |
 | Per-app inventory (name, SSO type) | | Yes | Yes |
 | User and system group inventory | | Yes | Yes |
-| Per-device inventory (hostname, OS, agent, MDM) | | Yes | Yes |
+| Per-device inventory (device ID, hostname, OS, agent, MDM, control states) | | Yes | Yes |
 | Per-policy inventory (name, type, MFA factors, conditions) | | Yes | Yes |
 | Directory Insights audit events (7-day window) | | | Yes |
 | Endpoint posture: fleet counts, control percentages, coverage | Yes | Yes | Yes |

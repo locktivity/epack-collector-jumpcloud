@@ -173,6 +173,13 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 		endpointIn.users = users
 		endpointIn.orgID = posture.OrgID
 		posture.endpoint = buildEndpointPosture(*endpointIn)
+		posture.DeviceControls = deviceControlsFrom(posture.endpoint)
+		if posture.DeviceInventory != nil {
+			for i := range posture.DeviceInventory.PerDevice {
+				row := &posture.DeviceInventory.PerDevice[i]
+				row.Controls = posture.endpoint.controlsByDevice[row.DeviceID]
+			}
+		}
 	}
 
 	posture.Diagnostics = diag.toDiagnostics()
@@ -440,6 +447,7 @@ func buildDeviceInventory(systems []jumpcloud.System) *DeviceInventory {
 	rows := make([]DeviceRow, 0, len(systems))
 	for _, s := range systems {
 		rows = append(rows, DeviceRow{
+			DeviceID:     s.ID,
 			Hostname:     s.Hostname,
 			OS:           s.OS,
 			OSVersion:    s.OSVersionString(),

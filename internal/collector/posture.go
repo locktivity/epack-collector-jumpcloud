@@ -16,6 +16,7 @@ type OrgPosture struct {
 	Apps           *AppMetrics           `json:"apps,omitempty"`
 	Policies       *PolicyMetrics        `json:"policies,omitempty"`
 	Devices        *DeviceMetrics        `json:"devices,omitempty"`
+	DeviceControls *DeviceControls       `json:"device_controls,omitempty"`
 
 	// Audit level: per-entity inventories
 	UserInventory   *UserInventory   `json:"user_inventory,omitempty"`
@@ -154,12 +155,38 @@ type DeviceInventory struct {
 
 // DeviceRow describes one managed system.
 type DeviceRow struct {
-	Hostname     string `json:"hostname"`
-	OS           string `json:"os"`
-	OSVersion    string `json:"os_version,omitempty"`
-	Active       bool   `json:"active"`
-	AgentVersion string `json:"agent_version,omitempty"`
-	MDMEnrolled  bool   `json:"mdm_enrolled"`
+	DeviceID     string                        `json:"device_id"`
+	Hostname     string                        `json:"hostname"`
+	OS           string                        `json:"os"`
+	OSVersion    string                        `json:"os_version,omitempty"`
+	Active       bool                          `json:"active"`
+	AgentVersion string                        `json:"agent_version,omitempty"`
+	MDMEnrolled  bool                          `json:"mdm_enrolled"`
+	Controls     map[string]ControlObservation `json:"controls,omitempty"`
+}
+
+// DeviceControls carries the endpoint control readings in the detailed
+// artifact, so they are reviewable here rather than only in the normalized
+// endpoint artifact. Each control keeps its percentage beside the device
+// counts it was computed from. Controls are omitted when device discovery
+// was incomplete, matching the endpoint artifact.
+type DeviceControls struct {
+	DiscoveryComplete        bool            `json:"discovery_complete"`
+	MaxObservationAgeSeconds int64           `json:"max_observation_age_seconds"`
+	DiskEncryption           *ControlSummary `json:"disk_encryption,omitempty"`
+	Firewall                 *ControlSummary `json:"firewall,omitempty"`
+	AntimalwareInstalled     *ControlSummary `json:"antimalware_installed,omitempty"`
+	AntimalwareHealthy       *ControlSummary `json:"antimalware_healthy,omitempty"`
+}
+
+// ControlSummary is one control across the fleet. PassingPct is
+// passing / (passing + failing) and is absent when no device was evaluated.
+type ControlSummary struct {
+	PassingPct                *float64 `json:"passing_pct,omitempty"`
+	PassingDevicesCount       int      `json:"passing_devices_count"`
+	FailingDevicesCount       int      `json:"failing_devices_count"`
+	UnknownDevicesCount       int      `json:"unknown_devices_count"`
+	NotApplicableDevicesCount int      `json:"not_applicable_devices_count"`
 }
 
 // PolicyInventory contains per-policy detail.
