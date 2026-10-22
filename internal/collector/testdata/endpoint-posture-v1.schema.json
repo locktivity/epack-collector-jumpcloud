@@ -120,7 +120,17 @@
         "properties": {"metric_coverage": {"maxProperties": 0}},
         "not": {"anyOf": [{"required": ["fleet"]}, {"required": ["hardening"]}, {"required": ["protection"]}, {"required": ["patching"]}, {"required": ["compliance"]}]}
       }
-    }
+    },
+    {"if": {"required": ["compliance"], "properties": {"compliance": {"required": ["compliant_pct"]}}}, "then": {"properties": {"metric_coverage": {"required": ["compliance.compliant_pct"]}}}},
+    {"if": {"required": ["hardening"], "properties": {"hardening": {"required": ["disk_encryption_pct"]}}}, "then": {"properties": {"metric_coverage": {"required": ["hardening.disk_encryption_pct"]}}}},
+    {"if": {"required": ["hardening"], "properties": {"hardening": {"required": ["screen_lock_compliant_pct"]}}}, "then": {"properties": {"metric_coverage": {"required": ["hardening.screen_lock_compliant_pct"]}}}},
+    {"if": {"required": ["hardening"], "properties": {"hardening": {"required": ["firewall_enabled_pct"]}}}, "then": {"properties": {"metric_coverage": {"required": ["hardening.firewall_enabled_pct"]}}}},
+    {"if": {"required": ["patching"], "properties": {"patching": {"required": ["os_supported_pct"]}}}, "then": {"properties": {"metric_coverage": {"required": ["patching.os_supported_pct"]}}}},
+    {"if": {"required": ["patching"], "properties": {"patching": {"required": ["os_baseline_compliant_pct"]}}}, "then": {"properties": {"metric_coverage": {"required": ["patching.os_baseline_compliant_pct"]}}}},
+    {"if": {"required": ["protection"], "properties": {"protection": {"required": ["antimalware_installed_pct"]}}}, "then": {"properties": {"metric_coverage": {"required": ["protection.antimalware_installed_pct"]}}}},
+    {"if": {"required": ["protection"], "properties": {"protection": {"required": ["antimalware_healthy_pct"]}}}, "then": {"properties": {"metric_coverage": {"required": ["protection.antimalware_healthy_pct"]}}}},
+    {"if": {"required": ["protection"], "properties": {"protection": {"required": ["edr_installed_pct"]}}}, "then": {"properties": {"metric_coverage": {"required": ["protection.edr_installed_pct"]}}}},
+    {"if": {"required": ["protection"], "properties": {"protection": {"required": ["edr_healthy_pct"]}}}, "then": {"properties": {"metric_coverage": {"required": ["protection.edr_healthy_pct"]}}}}
   ],
   "additionalProperties": false,
   "$defs": {

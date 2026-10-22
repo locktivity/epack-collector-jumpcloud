@@ -128,6 +128,56 @@ func TestEndpoint_SchemaRejectsFleetValuesWhenDiscoveryIncomplete(t *testing.T) 
 	}
 }
 
+func TestEndpoint_SchemaRequiresCoverageForEveryPercentage(t *testing.T) {
+	schema := compileEndpointSchema(t)
+	base := `{"schema_version":"1.0.0","collected_at":"2026-10-22T00:00:00Z","provider":"jumpcloud",
+		"scope":{"discovery_complete":true,"observed_devices_count":1,"description":"provider_visible_devices","max_observation_age_seconds":604800},
+		"metric_coverage":{},"availability":[]}`
+	coverage := `{"passing_devices_count":1,"failing_devices_count":0,"unknown_devices_count":0,"not_applicable_devices_count":0}`
+	doc := func(extra string) map[string]any {
+		t.Helper()
+		var d map[string]any
+		if err := json.Unmarshal([]byte(base), &d); err != nil {
+			t.Fatal(err)
+		}
+		if extra != "" {
+			var add map[string]any
+			if err := json.Unmarshal([]byte("{"+extra+"}"), &add); err != nil {
+				t.Fatal(err)
+			}
+			for k, v := range add {
+				d[k] = v
+			}
+		}
+		return d
+	}
+
+	rejected := map[string]string{
+		"disk encryption without coverage": `"hardening":{"disk_encryption_pct":100}`,
+		"edr health without coverage":      `"protection":{"edr_healthy_pct":50}`,
+		"compliance without coverage":      `"compliance":{"compliant_pct":90,"basis":"provider_reported"}`,
+		"coverage for a different metric": `"hardening":{"disk_encryption_pct":100},
+			"metric_coverage":{"hardening.firewall_enabled_pct":` + coverage + `}`,
+	}
+	for name, extra := range rejected {
+		if err := schema.Validate(doc(extra)); err == nil {
+			t.Errorf("schema accepted %s", name)
+		}
+	}
+
+	accepted := map[string]string{
+		"omitted metric with no coverage": "",
+		"percentage with its coverage": `"hardening":{"disk_encryption_pct":100},
+			"metric_coverage":{"hardening.disk_encryption_pct":` + coverage + `}`,
+		"coverage for an unemitted percentage": `"metric_coverage":{"hardening.firewall_enabled_pct":` + coverage + `}`,
+	}
+	for name, extra := range accepted {
+		if err := schema.Validate(doc(extra)); err != nil {
+			t.Errorf("schema rejected %s: %v", name, err)
+		}
+	}
+}
+
 func contractProblems(ep *EndpointPosture, level componentsdk.Level) []string {
 	var problems []string
 	values := map[string]*float64{}
