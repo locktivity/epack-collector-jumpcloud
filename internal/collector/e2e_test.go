@@ -21,6 +21,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -54,7 +55,7 @@ func getE2EConfig(t *testing.T) (Config, *jumpcloud.Client) {
 	cfg := Config{
 		OrgID: orgID,
 	}
-	client := jumpcloud.NewClient(apiKey, orgID)
+	client := jumpcloud.NewClient(&http.Client{Timeout: 30 * time.Second}, apiKey, orgID)
 	return cfg, client
 }
 
@@ -87,7 +88,9 @@ func TestE2E_RealJumpCloudCollection(t *testing.T) {
 		t.Errorf("collected_at %q is not RFC3339: %v", posture.CollectedAt, err)
 	}
 
-	assertPercentE2E(t, "authentication.mfa_coverage_pct", posture.Authentication.MFACoveragePct)
+	if p := posture.Authentication.MFACoveragePct; p != nil {
+		assertPercentE2E(t, "authentication.mfa_coverage_pct", *p)
+	}
 
 	if level.AtLeast(componentsdk.LevelAudit) {
 		if posture.UserInventory == nil {
@@ -139,7 +142,9 @@ func TestE2E_IDPPostureTransformation(t *testing.T) {
 		t.Errorf("schema_version = %q, want %q", normalized.SchemaVersion, SchemaVersion)
 	}
 
-	assertPercentFloatE2E(t, "user_security.mfa_coverage_pct", normalized.UserSecurity.MFACoveragePct)
+	if us := normalized.UserSecurity; us != nil && us.MFACoveragePct.Value != nil {
+		assertPercentE2E(t, "user_security.mfa_coverage_pct", *us.MFACoveragePct.Value)
+	}
 
 	data, _ := json.MarshalIndent(normalized, "", "  ")
 	t.Logf("IDP posture:\n%s", string(data))
@@ -155,12 +160,12 @@ func TestE2E_EndpointPosture(t *testing.T) {
 	}
 	for path, cov := range ep.MetricCoverage {
 		total := cov.PassingDevicesCount + cov.FailingDevicesCount + cov.UnknownDevicesCount + cov.NotApplicableDevicesCount
-		if ep.Scope.DiscoveryComplete && total != ep.Scope.ObservedDevicesCount {
-			t.Errorf("%s coverage sums to %d, want %d devices", path, total, ep.Scope.ObservedDevicesCount)
+		if ep.discovered() && total != *ep.Scope.ObservedDeviceCount {
+			t.Errorf("%s coverage sums to %d, want %d devices", path, total, *ep.Scope.ObservedDeviceCount)
 		}
 	}
-	if !level.AtLeast(componentsdk.LevelAudit) && (len(ep.Devices) > 0 || ep.Inventories != nil) {
-		t.Error("trust level must not include device inventory")
+	if !level.AtLeast(componentsdk.LevelAudit) && (len(ep.Devices) > 0 || len(ep.MetricCoverage) > 0) {
+		t.Error("trust level must not include device inventory or coverage")
 	}
 
 	data, _ := json.MarshalIndent(ep, "", "  ")
@@ -191,13 +196,6 @@ func TestE2E_DiagnosticsAreSafe(t *testing.T) {
 }
 
 func assertPercentE2E(t *testing.T, name string, v float64) {
-	t.Helper()
-	if v < 0 || v > 100 {
-		t.Errorf("%s should be in [0,100], got %v", name, v)
-	}
-}
-
-func assertPercentFloatE2E(t *testing.T, name string, v float64) {
 	t.Helper()
 	if v < 0 || v > 100 {
 		t.Errorf("%s should be in [0,100], got %v", name, v)

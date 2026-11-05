@@ -6,15 +6,18 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/locktivity/epack/componentsdk"
 )
 
 func testServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *Client) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	client := NewClient("test-api-key", "")
+	client := NewClient(srv.Client(), "test-api-key", "")
 	client.SetConsoleURL(srv.URL)
 	client.SetInsightsURL(srv.URL)
 	return srv, client
@@ -50,7 +53,7 @@ func TestClient_OrgIDHeader(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	client := NewClient("key", "org-123")
+	client := NewClient(srv.Client(), "key", "org-123")
 	client.SetConsoleURL(srv.URL)
 
 	_, _, _ = client.ListSystemUsers(context.Background())
@@ -158,7 +161,7 @@ func TestClient_ListAdministrators_UsesUsersEndpoint(t *testing.T) {
 	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		_, _ = w.Write([]byte(`{"totalCount":1,"results":[
-			{"_id":"a1","email":"admin@co.com","enableMultiFactor":false,"totpEnrolled":true,"roleName":"Administrator With Billing"}
+			{"_id":"a1","email":"admin@co.com","enableMultiFactor":false,"totpEnrolled":true,"roleName":"Administrator With Billing","suspended":true}
 		]}`))
 	})
 
@@ -169,8 +172,42 @@ func TestClient_ListAdministrators_UsesUsersEndpoint(t *testing.T) {
 	if gotPath != "/api/users" {
 		t.Errorf("path = %q, want /api/users", gotPath)
 	}
-	if total != 1 || len(admins) != 1 || !admins[0].TOTPEnrolled || admins[0].RoleName != "Administrator With Billing" {
+	if total != 1 || len(admins) != 1 || !admins[0].TOTPEnrolled || admins[0].RoleName != "Administrator With Billing" || !admins[0].Suspended {
 		t.Errorf("admins = %+v (total %d)", admins, total)
+	}
+}
+
+// JumpCloud recommends sorting on _id when paging with skip, so that no row
+// is missed or repeated.
+func TestClient_PagedListsSortByID(t *testing.T) {
+	lists := []struct {
+		name string
+		v1   bool
+		call func(*Client) error
+	}{
+		{"systems", true, func(c *Client) error { _, _, err := c.ListSystems(context.Background()); return err }},
+		{"usergroups", false, func(c *Client) error { _, _, err := c.ListUserGroups(context.Background()); return err }},
+		{"systemgroups", false, func(c *Client) error { _, _, err := c.ListSystemGroups(context.Background()); return err }},
+		{"authn policies", false, func(c *Client) error { _, _, err := c.ListAuthPolicies(context.Background()); return err }},
+	}
+	for _, l := range lists {
+		t.Run(l.name, func(t *testing.T) {
+			var query string
+			_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+				query = r.URL.RawQuery
+				if l.v1 {
+					jsonResponse(w, map[string]any{"totalCount": 0, "results": []any{}})
+					return
+				}
+				jsonResponse(w, []any{})
+			})
+			if err := l.call(client); err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			if want := "skip=0&limit=100&sort=_id"; query != want {
+				t.Errorf("query = %q, want %q", query, want)
+			}
+		})
 	}
 }
 
@@ -310,43 +347,55 @@ func TestClient_ErrorUnauthorized(t *testing.T) {
 	}
 }
 
-func TestClient_RetryOn429(t *testing.T) {
-	attempts := 0
+func TestClient_ErrorLeavesOutTheBody(t *testing.T) {
 	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		if attempts < 3 {
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`rate limited`))
-			return
-		}
-		jsonResponse(w, map[string]any{"totalCount": 0, "results": []any{}})
-	})
-	client.retryDelay = func(int) time.Duration { return time.Millisecond }
-
-	_, _, err := client.ListSystemUsers(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error after retries: %v", err)
-	}
-	if attempts != 3 {
-		t.Errorf("attempts = %d, want 3", attempts)
-	}
-}
-
-func TestClient_NoRetryOn400(t *testing.T) {
-	attempts := 0
-	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		attempts++
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`bad request`))
+		_, _ = w.Write([]byte(`{"message":"a message naming a resource"}`))
 	})
-	client.retryDelay = func(int) time.Duration { return time.Millisecond }
 
 	_, _, err := client.ListSystemUsers(context.Background())
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if attempts != 1 {
-		t.Errorf("attempts = %d, want 1 (no retry for 400)", attempts)
+	if strings.Contains(err.Error(), "resource") {
+		t.Errorf("error %q carries the response body", err)
+	}
+	if code := componentsdk.Classify(err); code != componentsdk.CodeInvalidResponse {
+		t.Errorf("code = %s, want invalid_response", code)
+	}
+}
+
+func TestClient_V1PageWithoutResultsIsInvalid(t *testing.T) {
+	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, map[string]any{})
+	})
+
+	_, _, err := client.ListSystems(context.Background())
+	if code := componentsdk.Classify(err); code != componentsdk.CodeInvalidResponse {
+		t.Errorf("code = %s (%v), want invalid_response", code, err)
+	}
+}
+
+func TestClient_V2NullListIsInvalid(t *testing.T) {
+	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`null`))
+	})
+
+	_, _, err := client.ListUserGroups(context.Background())
+	if code := componentsdk.Classify(err); code != componentsdk.CodeInvalidResponse {
+		t.Errorf("code = %s (%v), want invalid_response", code, err)
+	}
+}
+
+func TestClient_OrgValidationIsConfigInvalid(t *testing.T) {
+	_, client := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, map[string]any{"totalCount": 1, "results": []map[string]any{{"_id": "org-1"}}})
+	})
+
+	_, err := client.GetOrganization(context.Background(), "org-2")
+	if code := componentsdk.Classify(err); code != componentsdk.CodeConfigInvalid {
+		t.Errorf("code = %s (%v), want config_invalid", code, err)
 	}
 }
 
@@ -398,5 +447,23 @@ func TestClient_ContextCancellation(t *testing.T) {
 	_, _, err := client.ListSystemUsers(ctx)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
+	}
+}
+
+// Each call but the undocumented administrators list declares the read-only
+// scope JumpCloud's API reference lists for it.
+func TestPermission(t *testing.T) {
+	want := map[string]string{
+		OpListSystemUsers:    "users.readonly",
+		OpListSystems:        "systems.readonly",
+		OpListBitLocker:      "systeminsights.readonly",
+		OpListUserGroups:     "groups.readonly",
+		OpQueryEvents:        "directoryinsights.readonly",
+		OpListAdministrators: "",
+	}
+	for op, scope := range want {
+		if got := Permission(op); got != scope {
+			t.Errorf("Permission(%s) = %q, want %q", op, got, scope)
+		}
 	}
 }

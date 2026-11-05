@@ -2,7 +2,7 @@ package collector
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"math"
 	"time"
 
@@ -12,83 +12,126 @@ import (
 
 const auditWindowDays = 7
 
-// Collect gathers JumpCloud posture data at the requested level.
+// Collect gathers JumpCloud posture data at the requested level. It fails
+// only when the users cannot be listed or the configured organization does
+// not resolve. A value it cannot read after that is left out with a gap,
+// which the run's recorder holds.
 func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*OrgPosture, error) {
 	diag := &diagnosticsTracker{}
-	now := time.Now().UTC()
+	gaps := newGapLog(c.cfg.Recorder, level)
+	now := c.now().UTC()
+	audit := level.AtLeast(componentsdk.LevelAudit)
+	details := c.selected(detailedPath)
 
-	c.status("Fetching users")
-	users, serverUserTotal, err := c.client.ListSystemUsers(ctx)
+	stepCtx, step := componentsdk.StartStep(ctx, "users", "Fetching users")
+	users, serverUserTotal, err := c.client.ListSystemUsers(stepCtx)
+	step.End()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing users: %w", err)
 	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	userPartial := len(users) < serverUserTotal
+	userShortfall := listShortfall(jumpcloud.OpListSystemUsers, len(users), serverUserTotal)
 
 	posture := &OrgPosture{
 		SchemaVersion:    SchemaVersion,
 		CollectedAt:      now.Format(time.RFC3339),
 		CollectedAtLevel: string(level),
-		Users:            computeUserMetrics(users, userPartial),
+		Users:            computeUserMetrics(users, userShortfall != nil),
 		Authentication:   computeAuthMetrics(users),
+		people:           countPeople(users),
+	}
+	if userShortfall != nil {
+		gaps.partial(serverUserTotal-len(users), userShortfall, detailed("/users"), detailed("/authentication"))
 	}
 
-	c.status("Fetching applications")
-	apps, serverAppTotal, appErr := c.client.ListApplications(ctx)
+	stepCtx, step = componentsdk.StartStep(ctx, "organization", "Fetching the organization")
+	org, orgErr := c.client.GetOrganization(stepCtx, c.cfg.OrgID)
+	step.End()
+	switch {
+	case orgErr != nil && isOrgValidationError(orgErr):
+		return nil, orgErr
+	case orgErr != nil:
+		diag.surfaceWarning("organization", safeDiagError(orgErr))
+		gaps.notCollected(orgErr, detailed("/org_id"))
+	case org == nil:
+		gaps.invalid(detailed("/org_id"), "JumpCloud listed no organization for the API key.")
+	default:
+		posture.OrgID = org.ID
+	}
+	gaps.rec.SignedInAs(componentsdk.Principal{
+		Provider:   "jumpcloud",
+		Kind:       "api_key",
+		TenantID:   posture.OrgID,
+		AuthMethod: componentsdk.AuthAPIToken,
+	})
+	posture.orgDomain = posture.OrgID
+	if posture.orgDomain == "" {
+		posture.orgDomain = userOrganization(users)
+	}
+
+	stepCtx, step = componentsdk.StartStep(ctx, "applications", "Fetching applications")
+	apps, serverAppTotal, appErr := c.client.ListApplications(stepCtx)
+	step.End()
+	var appShortfall error
 	if appErr != nil {
-		if isFatal(appErr) {
-			return nil, appErr
-		}
 		recordSurfaceError(diag, "applications", appErr)
+		gaps.notCollected(appErr, detailed("/apps"))
 	} else {
-		appPartial := len(apps) < serverAppTotal
-		posture.Apps = computeAppMetrics(apps, appPartial)
+		appShortfall = listShortfall(jumpcloud.OpListApplications, len(apps), serverAppTotal)
+		posture.Apps = computeAppMetrics(apps, appShortfall != nil)
+		if appShortfall != nil {
+			gaps.partial(serverAppTotal-len(apps), appShortfall, detailed("/apps"))
+		}
 	}
 
-	c.status("Fetching administrators")
-	admins, serverAdminTotal, adminErr := c.client.ListAdministrators(ctx)
+	stepCtx, step = componentsdk.StartStep(ctx, "administrators", "Fetching administrators")
+	admins, serverAdminTotal, adminErr := c.client.ListAdministrators(stepCtx)
+	step.End()
 	if adminErr != nil {
-		if isFatal(adminErr) {
-			return nil, adminErr
-		}
 		recordSurfaceError(diag, "administrators", adminErr)
+		gaps.notCollected(adminErr, detailed("/admins"))
 	} else {
-		adminPartial := len(admins) < serverAdminTotal
-		posture.Admins = computeAdminMetrics(admins, adminPartial)
+		adminShortfall := listShortfall(jumpcloud.OpListAdministrators, len(admins), serverAdminTotal)
+		posture.Admins = computeAdminMetrics(admins, adminShortfall != nil)
+		if adminShortfall != nil {
+			gaps.partial(serverAdminTotal-len(admins), adminShortfall, detailed("/admins"))
+		}
 	}
 
-	c.status("Fetching authentication policies")
-	policies, policyCapped, policyErr := c.client.ListAuthPolicies(ctx)
-	if policyErr != nil {
-		if isFatal(policyErr) {
-			return nil, policyErr
+	var policies []jumpcloud.AuthPolicy
+	var policyErr error
+	var policyCapped bool
+	if details {
+		stepCtx, step = componentsdk.StartStep(ctx, "policies", "Fetching authentication policies")
+		policies, policyCapped, policyErr = c.client.ListAuthPolicies(stepCtx)
+		step.End()
+		if policyErr != nil {
+			recordSurfaceError(diag, "auth_policies", policyErr)
+			gaps.notCollected(policyErr, detailed("/policies"))
+		} else {
+			posture.Policies = computePolicyMetrics(policies)
+			if policyCapped {
+				diag.surfaceWarning("auth_policies", "results capped at internal limit; policy inventory may be incomplete")
+				gaps.partial(0, capped(jumpcloud.OpListAuthPolicies, jumpcloud.MaxResults), detailed("/policies"))
+			}
 		}
-		recordSurfaceError(diag, "auth_policies", policyErr)
-	} else {
-		if policyCapped {
-			diag.surfaceWarning("auth_policies", "results capped at internal limit; policy inventory may be incomplete")
-		}
-		posture.Policies = computePolicyMetrics(policies)
 	}
 
-	c.status("Fetching systems")
-	systems, serverSysTotal, sysErr := c.client.ListSystems(ctx)
-	if sysErr != nil {
-		if isFatal(sysErr) {
-			return nil, sysErr
-		}
-		recordSurfaceError(diag, "systems", sysErr)
-	} else {
-		sysPartial := len(systems) < serverSysTotal
-		posture.Devices = computeDeviceMetrics(systems, sysPartial)
-	}
-
+	stepCtx, step = componentsdk.StartStep(ctx, "devices", "Fetching systems")
+	systems, serverSysTotal, sysErr := c.client.ListSystems(stepCtx)
 	var endpointIn *endpointInputs
-	if sysErr == nil {
+	var sysShortfall error
+	var sysUnmeasured int
+	if sysErr != nil {
+		recordSurfaceError(diag, "systems", sysErr)
+		gaps.notCollected(sysErr, detailed("/devices"), detailed("/device_controls"), endpoint(""))
+	} else {
+		distinct, _ := reconcileSystems(systems, now)
+		sysShortfall = systemsShortfall(len(systems), len(distinct), serverSysTotal)
+		sysUnmeasured = serverSysTotal - len(distinct)
+		posture.Devices = computeDeviceMetrics(distinct, sysShortfall != nil)
+		if sysShortfall != nil {
+			gaps.partial(sysUnmeasured, sysShortfall, detailed("/devices"))
+		}
 		endpointIn = &endpointInputs{
 			systems:     systems,
 			serverTotal: serverSysTotal,
@@ -96,106 +139,204 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 			now:         now,
 			maxAge:      c.cfg.maxObservationAge(),
 		}
-		if err := c.fetchEndpointTelemetry(ctx, diag, endpointIn); err != nil {
-			return nil, err
-		}
+		c.fetchEndpointTelemetry(stepCtx, diag, endpointIn)
 	}
+	step.End()
 
-	org, orgErr := c.client.GetOrganization(ctx, c.cfg.OrgID)
-	if orgErr != nil {
-		if isFatal(orgErr) || isOrgValidationError(orgErr) {
-			return nil, orgErr
-		}
-		diag.surfaceWarning("organization", safeDiagError(orgErr))
-	} else if org != nil {
-		posture.OrgID = org.ID
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	if level.AtLeast(componentsdk.LevelAudit) {
+	if audit {
 		c.status("Building inventories")
 		posture.UserInventory = buildUserInventory(users)
-		if appErr == nil {
+		gaps.inventory(posture.UserInventory.Truncated, posture.UserInventory.TruncatedDropped, MaxUsers, userShortfall,
+			serverUserTotal-len(users), "/user_inventory/per_user")
+		switch {
+		case appErr != nil:
+			gaps.notCollected(appErr, detailed("/app_inventory"))
+		default:
 			posture.AppInventory = buildAppInventory(apps)
+			gaps.inventory(false, 0, 0, appShortfall, serverAppTotal-len(apps), "/app_inventory/per_app")
 		}
-		if sysErr == nil {
-			posture.DeviceInventory = buildDeviceInventory(systems)
-		}
-		if policyErr == nil {
-			posture.PolicyInventory = buildPolicyInventory(policies)
-		}
-
-		userGroups, ugCapped, ugErr := c.client.ListUserGroups(ctx)
-		if ugErr != nil {
-			if isFatal(ugErr) {
-				return nil, ugErr
-			}
-			recordSurfaceError(diag, "user_groups", ugErr)
-		} else if ugCapped {
-			diag.surfaceWarning("user_groups", "results capped at internal limit; group inventory may be incomplete")
-		}
-		systemGroups, sgCapped, sgErr := c.client.ListSystemGroups(ctx)
-		if sgErr != nil {
-			if isFatal(sgErr) {
-				return nil, sgErr
-			}
-			recordSurfaceError(diag, "system_groups", sgErr)
-		} else if sgCapped {
-			diag.surfaceWarning("system_groups", "results capped at internal limit; group inventory may be incomplete")
-		}
-		if ugErr == nil || sgErr == nil {
-			posture.GroupInventory = buildGroupInventory(userGroups, systemGroups)
-		}
-	}
-
-	if level.AtLeast(componentsdk.LevelInternal) {
-		c.status("Fetching audit events")
-		start := now.Add(-auditWindowDays * 24 * time.Hour)
-		events, evErr := c.client.QueryEvents(ctx, "directory", start, now, MaxAuditEvents+1)
-		if evErr != nil {
-			if isFatal(evErr) {
-				return nil, evErr
-			}
-			recordSurfaceError(diag, "audit_log", evErr)
+		if sysErr != nil {
+			gaps.notCollected(sysErr, detailed("/device_inventory"))
 		} else {
-			posture.AuditLog = buildAuditLog(events)
+			posture.DeviceInventory = buildDeviceInventory(systems)
+			gaps.inventory(posture.DeviceInventory.Truncated, posture.DeviceInventory.TruncatedDropped, MaxDevices, sysShortfall,
+				sysUnmeasured, "/device_inventory/per_device")
+		}
+		if details {
+			if policyErr != nil {
+				gaps.notCollected(policyErr, detailed("/policy_inventory"))
+			} else {
+				posture.PolicyInventory = buildPolicyInventory(policies)
+				if policyCapped {
+					gaps.partial(0, capped(jumpcloud.OpListAuthPolicies, jumpcloud.MaxResults), detailed("/policy_inventory/auth_policies"))
+				}
+			}
+			c.collectGroups(ctx, diag, gaps, posture)
 		}
 	}
 
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if level.AtLeast(componentsdk.LevelInternal) && details {
+		c.collectAuditLog(ctx, diag, gaps, posture, now)
 	}
 
 	if endpointIn != nil {
 		endpointIn.users = users
 		endpointIn.orgID = posture.OrgID
-		posture.endpoint = buildEndpointPosture(*endpointIn)
-		posture.DeviceControls = deviceControlsFrom(posture.endpoint)
+		ep := buildEndpointPosture(*endpointIn)
+		posture.endpoint = ep
+		posture.DeviceControls = deviceControlsFrom(ep)
 		if posture.DeviceInventory != nil {
 			for i := range posture.DeviceInventory.PerDevice {
 				row := &posture.DeviceInventory.PerDevice[i]
-				row.Controls = posture.endpoint.controlsByDevice[row.DeviceID]
+				row.Controls = ep.controlsByDevice[row.DeviceID]
 			}
 		}
+		recordEndpointGaps(gaps, ep, posture, endpointIn, sysShortfall)
+	}
+
+	if posture.orgDomain != "" {
+		posture.recordIDPPostureGaps(gaps, userShortfall, serverUserTotal-len(users))
+	} else if orgErr != nil {
+		gaps.notCollected(orgErr, idp(""))
+	} else {
+		gaps.invalid(idp(""), "JumpCloud listed no organization for the API key, and no user names one.")
 	}
 
 	posture.Diagnostics = diag.toDiagnostics()
 	return posture, nil
 }
 
-// isFatal returns true for errors that should abort collection entirely:
-// context cancellation, deadline exceeded, and 401 unauthorized.
-func isFatal(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
+// collectGroups reads the user and system groups for the audit level. A
+// list that fails is null with a gap, and the other list is still written.
+func (c *Collector) collectGroups(ctx context.Context, diag *diagnosticsTracker, gaps *gapLog, posture *OrgPosture) {
+	stepCtx, step := componentsdk.StartStep(ctx, "groups", "Fetching user and system groups")
+	defer step.End()
+	userGroups, ugCapped, ugErr := c.client.ListUserGroups(stepCtx)
+	if ugErr != nil {
+		recordSurfaceError(diag, "user_groups", ugErr)
+		gaps.notCollected(ugErr, detailed("/group_inventory/user_groups"))
+	} else if ugCapped {
+		diag.surfaceWarning("user_groups", "results capped at internal limit; group inventory may be incomplete")
+		gaps.partial(0, capped(jumpcloud.OpListUserGroups, jumpcloud.MaxResults), detailed("/group_inventory/user_groups"))
 	}
-	if errors.Is(err, jumpcloud.ErrUnauthorized) {
-		return true
+	systemGroups, sgCapped, sgErr := c.client.ListSystemGroups(stepCtx)
+	if sgErr != nil {
+		recordSurfaceError(diag, "system_groups", sgErr)
+		gaps.notCollected(sgErr, detailed("/group_inventory/system_groups"))
+	} else if sgCapped {
+		diag.surfaceWarning("system_groups", "results capped at internal limit; group inventory may be incomplete")
+		gaps.partial(0, capped(jumpcloud.OpListSystemGroups, jumpcloud.MaxResults), detailed("/group_inventory/system_groups"))
 	}
-	return false
+	if ugErr == nil || sgErr == nil {
+		posture.GroupInventory = buildGroupInventory(userGroups, ugErr == nil, systemGroups, sgErr == nil)
+	}
+}
+
+// collectAuditLog reads the last auditWindowDays of Directory Insights
+// events for the internal level.
+func (c *Collector) collectAuditLog(ctx context.Context, diag *diagnosticsTracker, gaps *gapLog, posture *OrgPosture, now time.Time) {
+	stepCtx, step := componentsdk.StartStep(ctx, "audit_log", "Fetching audit events")
+	defer step.End()
+	start := now.Add(-auditWindowDays * 24 * time.Hour)
+	events, err := c.client.QueryEvents(stepCtx, "directory", start, now, MaxAuditEvents+1)
+	if err != nil {
+		recordSurfaceError(diag, "audit_log", err)
+		gaps.notCollected(err, detailed("/audit_log"))
+		return
+	}
+	posture.AuditLog = buildAuditLog(events)
+	if posture.AuditLog.Truncated {
+		cut := truncated("audit_log.events", MaxAuditEvents, posture.AuditLog.TruncatedDropped)
+		gaps.partial(posture.AuditLog.TruncatedDropped, cut, detailed("/audit_log/events"), detailed("/audit_log/count_by_type"))
+	}
+}
+
+// recordEndpointGaps records the gaps of the endpoint artifact and of the
+// detailed device controls, then mirrors the detailed gaps onto the
+// endpoint values copied from them. sysShortfall is set whenever discovery
+// is incomplete, since both compare the distinct device IDs with the total.
+func recordEndpointGaps(gaps *gapLog, ep *EndpointPosture, posture *OrgPosture, in *endpointInputs, sysShortfall error) {
+	audit := gaps.audit()
+
+	if !ep.discovered() {
+		unmeasured := in.serverTotal - len(ep.controlsByDevice)
+		for _, m := range measuredMetrics {
+			gaps.partial(unmeasured, sysShortfall, detailed(m.summary))
+		}
+		gaps.partial(unmeasured, sysShortfall, endpoint("/fleet"))
+		if ep.Scope.DiscoveryComplete == nil {
+			gaps.notCollected(sysShortfall, detailed("/device_controls/discovery_complete"))
+		}
+	}
+
+	for _, m := range measuredMetrics {
+		if u := ep.unread[m.control]; len(u.devices) > 0 {
+			gaps.partial(len(u.devices), u.first, detailed(m.summary))
+		}
+	}
+
+	if audit {
+		for i, row := range ep.Devices {
+			for _, m := range measuredMetrics {
+				if err := ep.unread[m.control].devices[row.DeviceID]; err != nil {
+					gaps.notCollected(err, endpoint(rowPointer("/devices", i, "controls")+"/"+m.control))
+				}
+			}
+		}
+		if posture.DeviceInventory != nil {
+			for i, row := range posture.DeviceInventory.PerDevice {
+				for _, m := range measuredMetrics {
+					if err := ep.unread[m.control].devices[row.DeviceID]; err != nil {
+						gaps.notCollected(err, detailed(rowPointer("/device_inventory/per_device", i, "controls")+"/"+m.control))
+					}
+				}
+			}
+		}
+		if fail := in.insightUsers.failure(); fail != nil {
+			for i := range ep.Devices {
+				gaps.notCollected(fail, endpoint(rowPointer("/devices", i, "local_admin_accounts")))
+			}
+		}
+		if ep.truncatedDevices > 0 {
+			gaps.partial(ep.truncatedDevices, truncated("devices", MaxDevices, ep.truncatedDevices), endpoint("/devices"))
+		}
+	}
+
+	for _, u := range unmeasuredEndpointValues {
+		if u.path == "" && !audit {
+			continue
+		}
+		gaps.unread(endpoint(u.pointer), u.code, u.reason)
+	}
+	for _, m := range measuredMetrics {
+		if code, ok := ep.noSource[m.path]; ok {
+			gaps.unread(endpoint(m.pointer), code, noSourceReason(code))
+		}
+	}
+
+	if audit {
+		gaps.mirror("/org_id", endpoint("/organization_id"))
+	}
+	gaps.mirror("/device_controls/discovery_complete", endpoint("/scope/discovery_complete"))
+	gaps.mirror("/device_controls/max_observation_age_seconds", endpoint("/scope/max_observation_age_seconds"))
+	for _, m := range measuredMetrics {
+		gaps.mirror(m.summary+"/passing_pct", endpoint(m.pointer))
+		if !audit {
+			continue
+		}
+		for _, count := range coverageCounts {
+			gaps.mirror(m.summary+"/"+count.detailed, endpoint("/metric_coverage/"+m.path+"/"+count.normalized))
+		}
+	}
+}
+
+// coverageCounts names each coverage count in the detailed artifact and in
+// the endpoint artifact.
+var coverageCounts = []struct{ detailed, normalized string }{
+	{"passing_devices_count", "passing_device_count"},
+	{"failing_devices_count", "failing_device_count"},
+	{"unknown_devices_count", "unknown_device_count"},
+	{"not_applicable_devices_count", "not_applicable_device_count"},
 }
 
 func recordSurfaceError(diag *diagnosticsTracker, surface string, err error) {
@@ -224,6 +365,58 @@ func computeUserMetrics(users []jumpcloud.SystemUser, partial bool) UserMetrics 
 	return m
 }
 
+// countPeople counts the users who can sign in, and those of them with MFA,
+// with phishing-resistant MFA, and locked out.
+func countPeople(users []jumpcloud.SystemUser) *peopleCounts {
+	pc := &peopleCounts{}
+	for _, u := range users {
+		if !canSignIn(u) {
+			continue
+		}
+		pc.active++
+		if hasMFA(u) {
+			pc.mfa++
+		}
+		if u.MFAEnrollment.HasPhishingResistantMFA() {
+			pc.phishingResistant++
+		}
+		if u.AccountLocked {
+			pc.locked++
+		}
+	}
+	return pc
+}
+
+// canSignIn reports whether the user is neither suspended nor staged.
+func canSignIn(u jumpcloud.SystemUser) bool {
+	return u.State != "SUSPENDED" && u.State != "STAGED"
+}
+
+// hasMFA reports whether the user has any MFA method enrolled. Without an
+// enrollment record, the TOTP flag decides.
+func hasMFA(u jumpcloud.SystemUser) bool {
+	if u.MFAEnrollment != nil {
+		return u.MFAEnrollment.HasAnyMFA()
+	}
+	return u.TOTPEnabled
+}
+
+// userOrganization returns the organization the users name, or "" when none
+// does or they disagree.
+func userOrganization(users []jumpcloud.SystemUser) string {
+	org := ""
+	for _, u := range users {
+		switch {
+		case u.Organization == "":
+		case org == "":
+			org = u.Organization
+		case org != u.Organization:
+			return ""
+		}
+	}
+	return org
+}
+
 func computeAuthMetrics(users []jumpcloud.SystemUser) AuthenticationMetrics {
 	if len(users) == 0 {
 		return AuthenticationMetrics{}
@@ -231,15 +424,11 @@ func computeAuthMetrics(users []jumpcloud.SystemUser) AuthenticationMetrics {
 
 	var mfaCount, totpCount, webauthnCount, pushCount, notEnrolledCount, portalMFACount int
 	for _, u := range users {
-		if u.State == "SUSPENDED" || u.State == "STAGED" {
+		if !canSignIn(u) {
 			continue
 		}
 
-		hasMFA := false
 		if u.MFAEnrollment != nil {
-			if u.MFAEnrollment.HasAnyMFA() {
-				hasMFA = true
-			}
 			if u.MFAEnrollment.TOTPStatus == "ENROLLED" {
 				totpCount++
 			}
@@ -251,10 +440,9 @@ func computeAuthMetrics(users []jumpcloud.SystemUser) AuthenticationMetrics {
 			}
 		} else if u.TOTPEnabled {
 			totpCount++
-			hasMFA = true
 		}
 
-		if hasMFA {
+		if hasMFA(u) {
 			mfaCount++
 		} else {
 			notEnrolledCount++
@@ -276,12 +464,15 @@ func computeAuthMetrics(users []jumpcloud.SystemUser) AuthenticationMetrics {
 	}
 }
 
+// computeAdminMetrics counts the administrators who are not suspended. A
+// suspended administrator has no Admin Portal or API access.
 func computeAdminMetrics(admins []jumpcloud.Administrator, partial bool) *AdminMetrics {
-	if len(admins) == 0 {
-		return &AdminMetrics{}
-	}
-	m := &AdminMetrics{TotalAdmins: len(admins), Partial: partial}
+	m := &AdminMetrics{Partial: partial}
 	for _, a := range admins {
+		if a.Suspended {
+			continue
+		}
+		m.TotalAdmins++
 		if a.TOTPEnrolled {
 			m.TOTPEnrolledCount++
 		}
@@ -292,7 +483,7 @@ func computeAdminMetrics(admins []jumpcloud.Administrator, partial bool) *AdminM
 			m.SuperAdminCount++
 		}
 	}
-	m.TOTPEnrolledPct = pct(m.TOTPEnrolledCount, len(admins))
+	m.TOTPEnrolledPct = pct(m.TOTPEnrolledCount, m.TotalAdmins)
 	return m
 }
 
@@ -307,7 +498,7 @@ func isSuperAdmin(roleName string) bool {
 
 func computeAppMetrics(apps []jumpcloud.Application, partial bool) *AppMetrics {
 	if len(apps) == 0 {
-		return &AppMetrics{}
+		return &AppMetrics{Partial: partial}
 	}
 	ssoCount := 0
 	for _, a := range apps {
@@ -369,7 +560,9 @@ func isPhishingResistantOnly(factors []jumpcloud.MFAFactorEntry) bool {
 	return true
 }
 
-func computeDeviceMetrics(systems []jumpcloud.System, partial bool) *DeviceMetrics {
+// computeDeviceMetrics counts the systems reconcileSystems returns, one per
+// device ID.
+func computeDeviceMetrics(systems []*jumpcloud.System, partial bool) *DeviceMetrics {
 	m := &DeviceMetrics{
 		TotalSystems: len(systems),
 		OSBreakdown:  make(map[string]int),
@@ -432,13 +625,21 @@ func buildAppInventory(apps []jumpcloud.Application) *AppInventory {
 	return &AppInventory{PerApp: rows}
 }
 
-func buildGroupInventory(userGroups []jumpcloud.UserGroup, systemGroups []jumpcloud.SystemGroup) *GroupInventory {
+// buildGroupInventory lists the groups of each kind that was read. A kind
+// that was not read stays null.
+func buildGroupInventory(userGroups []jumpcloud.UserGroup, usersRead bool, systemGroups []jumpcloud.SystemGroup, systemsRead bool) *GroupInventory {
 	inv := &GroupInventory{}
-	for _, g := range userGroups {
-		inv.UserGroups = append(inv.UserGroups, GroupRow{Name: g.Name, Type: g.Type})
+	if usersRead {
+		inv.UserGroups = make([]GroupRow, 0, len(userGroups))
+		for _, g := range userGroups {
+			inv.UserGroups = append(inv.UserGroups, GroupRow{Name: g.Name, Type: g.Type})
+		}
 	}
-	for _, g := range systemGroups {
-		inv.SystemGroups = append(inv.SystemGroups, GroupRow{Name: g.Name, Type: g.Type})
+	if systemsRead {
+		inv.SystemGroups = make([]GroupRow, 0, len(systemGroups))
+		for _, g := range systemGroups {
+			inv.SystemGroups = append(inv.SystemGroups, GroupRow{Name: g.Name, Type: g.Type})
+		}
 	}
 	return inv
 }
@@ -518,18 +719,21 @@ func buildAuditLog(events []jumpcloud.DirectoryInsightsEvent) *AuditLog {
 func activeUserCount(users []jumpcloud.SystemUser) int {
 	count := 0
 	for _, u := range users {
-		if u.State != "SUSPENDED" && u.State != "STAGED" {
+		if canSignIn(u) {
 			count++
 		}
 	}
 	return count
 }
 
-func pct(num, denom int) float64 {
+// pct is num out of denom as a percentage with two decimals, or nil when
+// denom is 0.
+func pct(num, denom int) *float64 {
 	if denom == 0 {
-		return 0
+		return nil
 	}
-	return round2(float64(num) / float64(denom) * 100)
+	v := round2(float64(num) / float64(denom) * 100)
+	return &v
 }
 
 func round2(v float64) float64 {

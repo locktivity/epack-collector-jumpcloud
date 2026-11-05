@@ -285,27 +285,52 @@ func TestCollect_PermissionDegradation(t *testing.T) {
 	}
 }
 
-func TestCollect_UnauthorizedIsFatal(t *testing.T) {
+// gapAt returns the gap rec holds at path and pointer.
+func gapAt(rec *componentsdk.Recorder, path, pointer string) (componentsdk.Gap, bool) {
+	for _, g := range rec.Gaps() {
+		if g.Path == path && g.Pointer == pointer {
+			return g, true
+		}
+	}
+	return componentsdk.Gap{}, false
+}
+
+func TestCollect_UnauthorizedSurfaceLeavesAGap(t *testing.T) {
 	mock := &mockClient{
 		users:   []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED"}},
 		appsErr: &jumpcloud.APIError{StatusCode: 401},
 	}
-	c := New(Config{}, mock)
-	_, err := c.Collect(context.Background(), componentsdk.LevelTrust)
-	if err == nil {
-		t.Fatal("expected fatal error from 401")
+	rec := &componentsdk.Recorder{}
+	posture, err := New(Config{Recorder: rec}, mock).Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if posture.Apps != nil {
+		t.Error("apps should be left out")
+	}
+	if g, ok := gapAt(rec, detailedPath, "/apps"); !ok || g.Code != componentsdk.CodeAuthFailed {
+		t.Errorf("gap at /apps = %+v, want auth_failed", g)
 	}
 }
 
-func TestCollect_OrganizationUnauthorizedIsFatal(t *testing.T) {
+func TestCollect_OrganizationRefusedLeavesAGap(t *testing.T) {
 	mock := &mockClient{
-		users:  []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED"}},
-		orgErr: &jumpcloud.APIError{StatusCode: 401},
+		users:  []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED", Organization: "org-1"}},
+		orgErr: &jumpcloud.APIError{StatusCode: 403},
 	}
-	c := New(Config{}, mock)
-	_, err := c.Collect(context.Background(), componentsdk.LevelTrust)
-	if err == nil {
-		t.Fatal("expected fatal error from organization 401")
+	rec := &componentsdk.Recorder{}
+	posture, err := New(Config{Recorder: rec}, mock).Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if posture.OrgID != "" {
+		t.Errorf("org_id = %q, want it left out", posture.OrgID)
+	}
+	if g, ok := gapAt(rec, detailedPath, "/org_id"); !ok || g.Code != componentsdk.CodePermissionDenied {
+		t.Errorf("gap at /org_id = %+v, want permission_denied", g)
+	}
+	if idp := posture.ToIDPPosture(); idp == nil || idp.OrgDomain != "org-1" {
+		t.Errorf("idp-posture = %+v, want org_domain from the users' organization", idp)
 	}
 }
 
@@ -363,8 +388,8 @@ func TestCollect_MFACoverage_SMSOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if posture.Authentication.MFACoveragePct != 100 {
-		t.Errorf("mfa_coverage_pct = %v, want 100", posture.Authentication.MFACoveragePct)
+	if p := posture.Authentication.MFACoveragePct; p == nil || *p != 100 {
+		t.Errorf("mfa_coverage_pct = %v, want 100", p)
 	}
 }
 
@@ -418,7 +443,8 @@ func TestCollect_PartialDiscovery(t *testing.T) {
 	mock.userTotal = 100
 	mock.appTotal = 50
 
-	c := New(Config{}, mock)
+	rec := &componentsdk.Recorder{}
+	c := New(Config{Recorder: rec}, mock)
 	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -429,11 +455,70 @@ func TestCollect_PartialDiscovery(t *testing.T) {
 	if posture.Apps == nil || !posture.Apps.Partial {
 		t.Error("apps.partial should be true")
 	}
+	for _, pointer := range []string{"/users", "/authentication", "/apps"} {
+		if g, ok := gapAt(rec, detailedPath, pointer); !ok || g.Status != componentsdk.GapPartial || g.Code != componentsdk.CodeInvalidResponse {
+			t.Errorf("gap at %s = %+v, want a partial invalid_response gap", pointer, g)
+		}
+	}
+	idp := posture.ToIDPPosture()
+	if idp.UserSecurity != nil || idp.Lifecycle != nil || idp.AppSecurity != nil {
+		t.Errorf("sections from lists read in part should be left out: %+v", idp)
+	}
+	if idp.PrivilegedAccess == nil {
+		t.Error("privileged_access comes from the administrators, which were read in full")
+	}
+}
+
+// repeatedRowMock lists s1 twice and s2 once, with JumpCloud reporting total
+// systems.
+func repeatedRowMock(total int) *mockClient {
+	mac := func(id, lastContact string) jumpcloud.System {
+		return jumpcloud.System{ID: id, OS: "Mac OS X", OSFamily: "darwin", Active: true, LastContact: lastContact,
+			MDM: &jumpcloud.SystemMDM{Vendor: "internal", Internal: &jumpcloud.MDMInternal{DeviceID: "mdm-" + id}}}
+	}
+	return &mockClient{
+		users: []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED"}},
+		org:   &jumpcloud.Organization{ID: "org-1"},
+		systems: []jumpcloud.System{
+			mac("s1", "2026-10-01T10:00:00Z"),
+			mac("s1", "2026-10-01T11:00:00Z"),
+			mac("s2", "2026-10-01T10:00:00Z"),
+		},
+		sysTotal: total,
+	}
+}
+
+func TestCollect_RepeatedSystemRowCountsOnce(t *testing.T) {
+	posture, err := New(Config{Now: func() time.Time { return testNow }}, repeatedRowMock(2)).Collect(context.Background(), componentsdk.LevelAudit)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	d := posture.Devices
+	if d.TotalSystems != 2 || d.ActiveSystems != 2 || d.MDMEnrolled != 2 || d.OSBreakdown["macOS"] != 2 || d.Partial {
+		t.Errorf("devices = %+v, want 2 active MDM-enrolled Macs and not partial", d)
+	}
+}
+
+func TestCollect_RepeatedSystemRowDoesNotHideAMissingSystem(t *testing.T) {
+	rec := &componentsdk.Recorder{}
+	posture, err := New(Config{Recorder: rec, Now: func() time.Time { return testNow }}, repeatedRowMock(3)).Collect(context.Background(), componentsdk.LevelAudit)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if d := posture.Devices; !d.Partial || d.TotalSystems != 2 {
+		t.Errorf("devices = %+v, want 2 systems and partial", d)
+	}
+	for _, pointer := range []string{"/devices", "/device_inventory/per_device"} {
+		g, ok := gapAt(rec, detailedPath, pointer)
+		if !ok || g.Status != componentsdk.GapPartial || g.Code != componentsdk.CodeInvalidResponse || g.Unmeasured != 1 {
+			t.Errorf("gap at %s = %+v, want a partial invalid_response gap with 1 unmeasured", pointer, g)
+		}
+	}
 }
 
 func TestToIDPPosture_Complete(t *testing.T) {
 	c := New(Config{}, richMock())
-	posture, err := c.Collect(context.Background(), componentsdk.LevelTrust)
+	posture, err := c.Collect(context.Background(), componentsdk.LevelAudit)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -441,17 +526,42 @@ func TestToIDPPosture_Complete(t *testing.T) {
 	if idp == nil {
 		t.Fatal("should not be nil for complete data")
 	}
-	if idp.Provider != "jumpcloud" {
-		t.Errorf("provider = %q", idp.Provider)
+	if idp.Provider != "jumpcloud" || idp.OrgDomain != "org-1" {
+		t.Errorf("provider = %q, org_domain = %q", idp.Provider, idp.OrgDomain)
 	}
-	if idp.AppSecurity == nil {
-		t.Error("app_security should be present")
+	if idp.AppSecurity == nil || *idp.AppSecurity.SSOCoveragePct.Value != 66 {
+		t.Errorf("app_security = %+v, want sso_coverage_pct 66, rounded down", idp.AppSecurity)
 	}
 	if idp.PrivilegedAccess == nil {
 		t.Fatal("privileged_access should be present")
 	}
-	if idp.PrivilegedAccess.SuperAdminCount != 1 {
-		t.Errorf("super_admin_count = %d, want 1", idp.PrivilegedAccess.SuperAdminCount)
+	if *idp.PrivilegedAccess.SuperAdminCount != 1 {
+		t.Errorf("super_admin_count = %d, want 1", *idp.PrivilegedAccess.SuperAdminCount)
+	}
+	us := idp.UserSecurity
+	// Three users can sign in. Two have MFA, one has WebAuthn, one is locked.
+	if *us.UserCount != 3 || *us.MFAUserCount != 2 || *us.PhishingResistantUserCount != 1 || *us.LockedOutUserCount != 1 {
+		t.Errorf("user_security counts = %+v", us)
+	}
+	if *us.MFACoveragePct.Value != 66 || *us.LockedOutPct.Value != 34 {
+		t.Errorf("mfa_coverage_pct = %v, locked_out_pct = %v, want 66 and 34", *us.MFACoveragePct.Value, *us.LockedOutPct.Value)
+	}
+	if *idp.Lifecycle.AccountCount != 4 || *idp.Lifecycle.SuspendedPct.Value != 25 {
+		t.Errorf("lifecycle = %+v", idp.Lifecycle)
+	}
+}
+
+func TestToIDPPosture_TrustLeavesOutCounts(t *testing.T) {
+	posture, err := New(Config{}, richMock()).Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	idp := posture.ToIDPPosture()
+	if idp.UserSecurity.UserCount != nil || idp.PrivilegedAccess.PrivilegedUsersCount != nil || idp.Lifecycle.AccountCount != nil {
+		t.Error("counts are audit-level fields")
+	}
+	if !*idp.UserSecurity.UsersPresent || !*idp.PrivilegedAccess.PrivilegedUsersPresent {
+		t.Error("present flags are written at every level")
 	}
 }
 
@@ -461,45 +571,62 @@ func TestAdminMFA_RequirementIsNotEnrollment(t *testing.T) {
 		{ID: "a1", EnableMultiFactor: true, TOTPEnrolled: false, RoleName: "Administrator With Billing"},
 		{ID: "a2", EnableMultiFactor: false, TOTPEnrolled: true, RoleName: "Administrator"},
 	}
-	posture, err := New(Config{}, m).Collect(context.Background(), componentsdk.LevelTrust)
+	rec := &componentsdk.Recorder{}
+	posture, err := New(Config{Recorder: rec}, m).Collect(context.Background(), componentsdk.LevelTrust)
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
 	a := posture.Admins
-	if a.TOTPEnrolledCount != 1 || a.TOTPEnrolledPct != 50 || a.MFARequiredCount != 1 {
+	if a.TOTPEnrolledCount != 1 || *a.TOTPEnrolledPct != 50 || a.MFARequiredCount != 1 {
 		t.Errorf("admins = %+v, want 1 enrolled (50%%) and 1 required", a)
 	}
-	if pa := posture.ToIDPPosture().PrivilegedAccess; pa.PrivilegedMFACoveragePct != nil {
-		t.Errorf("coverage is unknown while an admin lacks observable enrollment, got %v", *pa.PrivilegedMFACoveragePct)
+	if pa := posture.ToIDPPosture().PrivilegedAccess; pa.PrivilegedMFACoveragePct.Read {
+		t.Errorf("coverage is unknown while an admin lacks observable enrollment, got %v", pa.PrivilegedMFACoveragePct.Value)
+	}
+	if g, ok := gapAt(rec, idpPosturePath, "/privileged_access/privileged_mfa_coverage_pct"); !ok || g.Code != componentsdk.CodeUnsupported {
+		t.Errorf("gap = %+v, want unsupported", g)
 	}
 
 	m.admins[0].TOTPEnrolled = true
 	posture, _ = New(Config{}, m).Collect(context.Background(), componentsdk.LevelTrust)
-	if pa := posture.ToIDPPosture().PrivilegedAccess; pa.PrivilegedMFACoveragePct == nil || *pa.PrivilegedMFACoveragePct != 100 {
+	if pa := posture.ToIDPPosture().PrivilegedAccess; pa.PrivilegedMFACoveragePct.Value == nil || *pa.PrivilegedMFACoveragePct.Value != 100 {
 		t.Error("every admin enrolled should report 100% coverage")
 	}
 }
 
-func TestToIDPPosture_PartialUsersReturnsNil(t *testing.T) {
-	posture := &OrgPosture{
-		Users:          UserMetrics{Total: 100, Active: 100, Partial: true},
-		Authentication: AuthenticationMetrics{MFACoveragePct: 100},
-		Apps:           &AppMetrics{TotalApps: 5, SSOEnabledApps: 5},
-		Admins:         &AdminMetrics{TotalAdmins: 1, SuperAdminCount: 1},
+func TestAdmins_SuspendedAdminIsNotCounted(t *testing.T) {
+	m := richMock()
+	m.admins = []jumpcloud.Administrator{
+		{ID: "a1", EnableMultiFactor: true, TOTPEnrolled: true, RoleName: "Administrator With Billing"},
+		{ID: "a2", EnableMultiFactor: true, TOTPEnrolled: false, RoleName: "Administrator With Billing", Suspended: true},
 	}
-	if idp := posture.ToIDPPosture(); idp != nil {
-		t.Error("should return nil when users are partial")
+	rec := &componentsdk.Recorder{}
+	posture, err := New(Config{Recorder: rec}, m).Collect(context.Background(), componentsdk.LevelAudit)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	a := posture.Admins
+	if a.TotalAdmins != 1 || a.SuperAdminCount != 1 || a.TOTPEnrolledCount != 1 || *a.TOTPEnrolledPct != 100 || a.MFARequiredCount != 1 {
+		t.Errorf("admins = %+v, want only the admin who is not suspended", a)
+	}
+	pa := posture.ToIDPPosture().PrivilegedAccess
+	if *pa.PrivilegedUsersCount != 1 || *pa.SuperAdminCount != 1 || pa.PrivilegedMFAUserCount == nil || *pa.PrivilegedMFAUserCount != 1 {
+		t.Errorf("privileged_access = %+v, want 1 privileged user, 1 super admin, and 1 with MFA", pa)
+	}
+	if v := pa.PrivilegedMFACoveragePct.Value; v == nil || *v != 100 {
+		t.Errorf("privileged_mfa_coverage_pct = %v, want 100", v)
+	}
+	if g, ok := gapAt(rec, idpPosturePath, "/privileged_access/privileged_mfa_coverage_pct"); ok {
+		t.Errorf("gap = %+v, want none", g)
 	}
 }
 
 func TestToIDPPosture_NoEnforcementClaims(t *testing.T) {
-	posture := &OrgPosture{
-		Users:          UserMetrics{Total: 1, Active: 1},
-		Authentication: AuthenticationMetrics{MFACoveragePct: 100},
-		Policies:       &PolicyMetrics{HasMFARequiredPolicy: true},
+	posture, err := New(Config{}, richMock()).Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
 	}
-	idp := posture.ToIDPPosture()
-	data, _ := json.Marshal(idp)
+	data, _ := json.Marshal(posture.ToIDPPosture())
 	var raw map[string]any
 	_ = json.Unmarshal(data, &raw)
 	if _, ok := raw["policy"]; ok {
@@ -511,9 +638,23 @@ func TestToIDPPosture_NoEnforcementClaims(t *testing.T) {
 }
 
 func TestToIDPPosture_NoUsers(t *testing.T) {
-	posture := &OrgPosture{}
-	if posture.ToIDPPosture() != nil {
-		t.Error("should return nil for zero users")
+	m := &mockClient{org: &jumpcloud.Organization{ID: "org-1"}}
+	posture, err := New(Config{}, m).Collect(context.Background(), componentsdk.LevelAudit)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	us := posture.ToIDPPosture().UserSecurity
+	if *us.UsersPresent || *us.UserCount != 0 || us.MFACoveragePct.Value != nil || !us.MFACoveragePct.Read {
+		t.Errorf("user_security = %+v, want no users and null percentages", us)
+	}
+	if posture.Authentication.MFACoveragePct != nil {
+		t.Error("the detailed MFA percentage over no users is null")
+	}
+}
+
+func TestToIDPPosture_NoOrganizationIsNil(t *testing.T) {
+	if (&OrgPosture{}).ToIDPPosture() != nil {
+		t.Error("an artifact without org_domain should not be built")
 	}
 }
 
@@ -587,5 +728,44 @@ func TestNormalizeOS(t *testing.T) {
 		if got := normalizeOS(tt.input); got != tt.want {
 			t.Errorf("normalizeOS(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+// Each value JumpCloud reports in a call the collector does not make has a
+// not_read gap. Each value JumpCloud does not report has an unsupported
+// gap. The audit-level count gets no gap below the audit level.
+func TestCollect_UnreadValueCodes(t *testing.T) {
+	m := endpointMock()
+	want := map[[2]string]componentsdk.Code{
+		{idpPosturePath, "/user_security/inactive_pct"}:                        componentsdk.CodeNotRead,
+		{idpPosturePath, "/app_security/authorized_third_party_apps_count"}:    componentsdk.CodeNotRead,
+		{idpPosturePath, "/app_security/provisioning_enabled_pct"}:             componentsdk.CodeUnsupported,
+		{idpPosturePath, "/privileged_access/standing_privileged_users_count"}: componentsdk.CodeUnsupported,
+		{idpPosturePath, "/lifecycle/archived_pct"}:                            componentsdk.CodeUnsupported,
+		{endpointPosturePath, "/hardening/screen_lock_compliant_pct"}:          componentsdk.CodeNotRead,
+		{endpointPosturePath, "/compliance/compliant_pct"}:                     componentsdk.CodeNotRead,
+		{endpointPosturePath, "/patching/os_supported_pct"}:                    componentsdk.CodeUnsupported,
+		{endpointPosturePath, "/patching/unsupported_os_count"}:                componentsdk.CodeUnsupported,
+		{endpointPosturePath, "/protection/edr_installed_pct"}:                 componentsdk.CodeUnsupported,
+	}
+	rec := &componentsdk.Recorder{}
+	if _, err := New(Config{Recorder: rec}, m).Collect(context.Background(), componentsdk.LevelAudit); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	for at, code := range want {
+		if g, ok := gapAt(rec, at[0], at[1]); !ok || g.Code != code {
+			t.Errorf("gap at %s %s = %+v, want %s", at[0], at[1], g, code)
+		}
+	}
+
+	rec = &componentsdk.Recorder{}
+	if _, err := New(Config{Recorder: rec}, m).Collect(context.Background(), componentsdk.LevelTrust); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if g, ok := gapAt(rec, endpointPosturePath, "/patching/unsupported_os_count"); ok {
+		t.Errorf("a trust run has no unsupported_os_count, got gap %+v", g)
+	}
+	if g, ok := gapAt(rec, endpointPosturePath, "/patching/os_supported_pct"); !ok || g.Code != componentsdk.CodeUnsupported {
+		t.Errorf("os_supported_pct gap = %+v, want unsupported", g)
 	}
 }

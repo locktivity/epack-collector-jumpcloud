@@ -30,11 +30,29 @@ type OrgPosture struct {
 
 	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
 
+	// orgDomain names the organization in the idp-posture artifact. It is
+	// org_id, or the organization the users name when org_id could not be
+	// read. It is not serialized.
+	orgDomain string
+	// people holds the user counts the normalized idp-posture artifact
+	// needs beyond the ones above. It is not serialized.
+	people *peopleCounts
+	// endpoint is the normalized endpoint-posture artifact, built from the
+	// same device data. It is not serialized.
 	endpoint *EndpointPosture
 }
 
+// peopleCounts counts the users who can sign in, which are the users
+// neither suspended nor staged. The MFA percentages are taken over them.
+type peopleCounts struct {
+	active            int
+	mfa               int
+	phishingResistant int
+	locked            int
+}
+
 // ToEndpointPosture returns the normalized endpoint-posture@v1 artifact, or
-// nil when device discovery failed and there is no device evidence at all.
+// nil when the systems could not be listed.
 func (o *OrgPosture) ToEndpointPosture() *EndpointPosture {
 	return o.endpoint
 }
@@ -51,35 +69,38 @@ type UserMetrics struct {
 	Partial   bool `json:"partial,omitempty"`
 }
 
-// AuthenticationMetrics contains MFA adoption metrics.
+// AuthenticationMetrics contains MFA adoption metrics. The percentages are
+// null when no user is active.
 type AuthenticationMetrics struct {
-	MFACoveragePct         float64 `json:"mfa_coverage_pct"`
-	TOTPEnrolledPct        float64 `json:"totp_enrolled_pct"`
-	WebAuthnEnrolledPct    float64 `json:"webauthn_enrolled_pct"`
-	PushEnrolledPct        float64 `json:"push_enrolled_pct"`
-	MFANotEnrolledCount    int     `json:"mfa_not_enrolled_count"`
-	PortalMFARequiredCount int     `json:"portal_mfa_required_count"`
+	MFACoveragePct         *float64 `json:"mfa_coverage_pct"`
+	TOTPEnrolledPct        *float64 `json:"totp_enrolled_pct"`
+	WebAuthnEnrolledPct    *float64 `json:"webauthn_enrolled_pct"`
+	PushEnrolledPct        *float64 `json:"push_enrolled_pct"`
+	MFANotEnrolledCount    int      `json:"mfa_not_enrolled_count"`
+	PortalMFARequiredCount int      `json:"portal_mfa_required_count"`
 }
 
 // AdminMetrics contains privileged user counts.
 // AdminMetrics separates what JumpCloud lets us observe: affirmative TOTP
 // enrollment, and whether MFA is required. Other admin factors (such as
 // WebAuthn) are not exposed, so neither field is total MFA coverage.
+// TOTPEnrolledPct is null when there are no administrators.
 type AdminMetrics struct {
-	TotalAdmins       int     `json:"total_admins"`
-	SuperAdminCount   int     `json:"super_admin_count"`
-	TOTPEnrolledCount int     `json:"totp_enrolled_count"`
-	TOTPEnrolledPct   float64 `json:"totp_enrolled_pct"`
-	MFARequiredCount  int     `json:"mfa_required_count"`
-	Partial           bool    `json:"partial,omitempty"`
+	TotalAdmins       int      `json:"total_admins"`
+	SuperAdminCount   int      `json:"super_admin_count"`
+	TOTPEnrolledCount int      `json:"totp_enrolled_count"`
+	TOTPEnrolledPct   *float64 `json:"totp_enrolled_pct"`
+	MFARequiredCount  int      `json:"mfa_required_count"`
+	Partial           bool     `json:"partial,omitempty"`
 }
 
-// AppMetrics contains SSO application metrics.
+// AppMetrics contains SSO application metrics. SSOCoveragePct is null when
+// there are no applications.
 type AppMetrics struct {
-	TotalApps      int     `json:"total_apps"`
-	SSOEnabledApps int     `json:"sso_enabled_apps"`
-	SSOCoveragePct float64 `json:"sso_coverage_pct"`
-	Partial        bool    `json:"partial,omitempty"`
+	TotalApps      int      `json:"total_apps"`
+	SSOEnabledApps int      `json:"sso_enabled_apps"`
+	SSOCoveragePct *float64 `json:"sso_coverage_pct"`
+	Partial        bool     `json:"partial,omitempty"`
 }
 
 // PolicyMetrics contains authentication policy summary.
@@ -134,7 +155,8 @@ type AppRow struct {
 	SSOEnabled bool   `json:"sso_enabled"`
 }
 
-// GroupInventory contains user and system group summaries.
+// GroupInventory contains user and system group summaries. A list is null,
+// with a gap, when it could not be read.
 type GroupInventory struct {
 	UserGroups   []GroupRow `json:"user_groups"`
 	SystemGroups []GroupRow `json:"system_groups"`
@@ -171,7 +193,7 @@ type DeviceRow struct {
 // counts it was computed from. Controls are omitted when device discovery
 // was incomplete, matching the endpoint artifact.
 type DeviceControls struct {
-	DiscoveryComplete        bool            `json:"discovery_complete"`
+	DiscoveryComplete        *bool           `json:"discovery_complete"`
 	MaxObservationAgeSeconds int64           `json:"max_observation_age_seconds"`
 	DiskEncryption           *ControlSummary `json:"disk_encryption,omitempty"`
 	Firewall                 *ControlSummary `json:"firewall,omitempty"`
@@ -180,9 +202,9 @@ type DeviceControls struct {
 }
 
 // ControlSummary is one control across the fleet. PassingPct is
-// passing / (passing + failing) and is absent when no device was evaluated.
+// passing / (passing + failing), and null when no device passed or failed.
 type ControlSummary struct {
-	PassingPct                *float64 `json:"passing_pct,omitempty"`
+	PassingPct                *float64 `json:"passing_pct"`
 	PassingDevicesCount       int      `json:"passing_devices_count"`
 	FailingDevicesCount       int      `json:"failing_devices_count"`
 	UnknownDevicesCount       int      `json:"unknown_devices_count"`
