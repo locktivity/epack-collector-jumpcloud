@@ -1,4 +1,4 @@
-.PHONY: build test lint lint-forbidden-data clean sdk-test sdk-run e2e
+.PHONY: build test lint lint-forbidden-data clean sdk-test sdk-run e2e trace-map
 
 BINARY_NAME := epack-collector-jumpcloud
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -35,6 +35,12 @@ lint-forbidden-data:
 # Clean build artifacts
 clean:
 	rm -f $(BINARY_NAME) $(BINARY_NAME)-*
+
+# Rewrites docs/schema/trace-map.json from the collectortest suite and the
+# source, at the epack version go.mod pins. Commit the result.
+EPACK_VERSION = $(shell go list -m -f '{{.Version}}' github.com/locktivity/epack)
+trace-map:
+	go run -tags components github.com/locktivity/epack/cmd/epack@$(EPACK_VERSION) sdk map
 
 # E2E tests against real JumpCloud API (requires JUMPCLOUD_API_KEY)
 e2e:

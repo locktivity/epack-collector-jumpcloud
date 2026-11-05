@@ -22,6 +22,8 @@ type SystemUser struct {
 	Created                     string         `json:"created"`
 	ExternallyManaged           bool           `json:"externally_managed"`
 	PasswordExpirationDate      string         `json:"password_expiration_date"`
+	// Organization is the ID of the organization the user belongs to.
+	Organization string `json:"organization"`
 }
 
 // MFAConfig holds MFA configuration flags.
@@ -87,13 +89,15 @@ type Organization struct {
 }
 
 // Administrator is an Admin Portal administrator from V1 /api/users, which
-// lists administrators (directory users are /api/systemusers).
+// lists administrators (directory users are /api/systemusers). A suspended
+// administrator has no Admin Portal or API access.
 type Administrator struct {
 	ID                string `json:"_id"`
 	Email             string `json:"email"`
 	EnableMultiFactor bool   `json:"enableMultiFactor"`
 	TOTPEnrolled      bool   `json:"totpEnrolled"`
 	RoleName          string `json:"roleName"`
+	Suspended         bool   `json:"suspended"`
 	Created           string `json:"created"`
 }
 

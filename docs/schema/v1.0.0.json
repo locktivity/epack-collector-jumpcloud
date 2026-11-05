@@ -1,0 +1,1302 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "epack-collector-jumpcloud/v1.0.0.json",
+  "title": "epack-collector-jumpcloud output",
+  "description": "The detailed artifact epack-collector-jumpcloud emits at artifacts/jumpcloud.details.json. The collector checks its output against this schema when it emits. A value the collector could not read is left out with a gap in the collector result.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "collected_at",
+    "collected_at_level",
+    "users",
+    "authentication"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0",
+      "x-epack-label": "Schema version",
+      "x-epack-summary": "Identifies the output format version."
+    },
+    "collected_at": {
+      "type": "string",
+      "format": "date-time",
+      "x-epack-label": "Collected at",
+      "x-epack-summary": "When the collection ran."
+    },
+    "collected_at_level": {
+      "enum": [
+        "trust",
+        "audit",
+        "internal"
+      ],
+      "x-epack-label": "Collection level",
+      "x-epack-summary": "The detail level this artifact was collected at, which is trust, audit, or internal."
+    },
+    "org_id": {
+      "type": "string",
+      "description": "The organization's ID from /api/organizations. Left out, with a gap, when the organization list could not be read, as for a service account",
+      "x-epack-label": "Organization ID",
+      "x-epack-summary": "The JumpCloud organization this collection covers."
+    },
+    "users": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Directory user counts by state. When the list was read in part, the counts cover the users read, with a partial gap",
+      "x-epack-label": "User counts",
+      "x-epack-summary": "Aggregate user population counts by state.",
+      "required": [
+        "total",
+        "active",
+        "staged",
+        "suspended",
+        "locked"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Directory users listed",
+          "x-epack-label": "Total users",
+          "x-epack-summary": "Total directory users.",
+          "x-epack-method": "Counts the users /api/systemusers lists, every page included."
+        },
+        "active": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Users whose state is ACTIVATED",
+          "x-epack-label": "Active users",
+          "x-epack-summary": "Users in the ACTIVATED state.",
+          "x-epack-method": "Counts the listed users whose state is ACTIVATED."
+        },
+        "staged": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Users whose state is STAGED",
+          "x-epack-label": "Staged users",
+          "x-epack-summary": "Users in the STAGED state (not yet activated).",
+          "x-epack-method": "Counts the listed users whose state is STAGED."
+        },
+        "suspended": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Users whose state is SUSPENDED",
+          "x-epack-label": "Suspended users",
+          "x-epack-summary": "Users in the SUSPENDED state.",
+          "x-epack-method": "Counts the listed users whose state is SUSPENDED."
+        },
+        "locked": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Users whose account is locked, in any state",
+          "x-epack-label": "Locked users",
+          "x-epack-summary": "Users whose account is currently locked.",
+          "x-epack-method": "Counts the listed users whose account_locked flag is true."
+        },
+        "partial": {
+          "type": "boolean",
+          "description": "True when fewer users were read than the totalCount JumpCloud reports. Left out when every one was read.",
+          "x-epack-label": "User list incomplete",
+          "x-epack-summary": "True when fewer users were fetched than JumpCloud reported, so user counts and MFA percentages cover only part of the directory.",
+          "x-epack-method": "Compares the users read from /api/systemusers with the totalCount JumpCloud reports, and is true when fewer were read."
+        }
+      }
+    },
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "MFA enrollment across the active users. When the user list was read in part, the values cover the users read, with a partial gap",
+      "x-epack-label": "MFA adoption",
+      "x-epack-summary": "Multi-factor authentication coverage across the user population.",
+      "required": [
+        "mfa_coverage_pct",
+        "totp_enrolled_pct",
+        "webauthn_enrolled_pct",
+        "push_enrolled_pct",
+        "mfa_not_enrolled_count",
+        "portal_mfa_required_count"
+      ],
+      "properties": {
+        "mfa_coverage_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of active users with any MFA method enrolled. Active users are those neither suspended nor staged",
+          "x-epack-label": "MFA coverage",
+          "x-epack-summary": "Percentage of active users with any MFA method enrolled.",
+          "x-epack-method": "Divides the active users with an enrolled MFA method by all active users. A user with no mfaEnrollment record counts when totp_enabled is true.",
+          "x-epack-null": "No user is active."
+        },
+        "totp_enrolled_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of active users with a TOTP authenticator enrolled",
+          "x-epack-label": "TOTP enrolled",
+          "x-epack-summary": "Percentage of active users with TOTP authenticator enrolled.",
+          "x-epack-method": "Divides the active users whose mfaEnrollment TOTP status is ENROLLED by all active users. A user with no mfaEnrollment record counts when totp_enabled is true.",
+          "x-epack-null": "No user is active."
+        },
+        "webauthn_enrolled_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of active users with a WebAuthn or FIDO2 key enrolled",
+          "x-epack-label": "WebAuthn/FIDO2 enrolled",
+          "x-epack-summary": "Percentage of active users with a phishing-resistant WebAuthn or FIDO2 key enrolled.",
+          "x-epack-method": "Divides the active users whose mfaEnrollment WebAuthn status is ENROLLED by all active users.",
+          "x-epack-null": "No user is active."
+        },
+        "push_enrolled_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of active users with push MFA enrolled",
+          "x-epack-label": "Push MFA enrolled",
+          "x-epack-summary": "Percentage of active users with push-based MFA enrolled.",
+          "x-epack-method": "Divides the active users whose mfaEnrollment push status is ENROLLED by all active users.",
+          "x-epack-null": "No user is active."
+        },
+        "mfa_not_enrolled_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Active users with no MFA method enrolled",
+          "x-epack-label": "Without MFA",
+          "x-epack-summary": "Count of active users with no MFA method enrolled.",
+          "x-epack-method": "Counts the active users with no enrolled MFA method."
+        },
+        "portal_mfa_required_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Active users whose account requires MFA for the User Portal",
+          "x-epack-label": "User Portal MFA required",
+          "x-epack-summary": "Active users whose account requires MFA to sign in to the JumpCloud User Portal. A requirement does not show which factor they enrolled.",
+          "x-epack-method": "Counts the active users whose enable_user_portal_multifactor flag is true."
+        }
+      }
+    },
+    "admins": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Admin Portal administrators. Left out, with a gap, when they could not be listed",
+      "x-epack-label": "Privileged access",
+      "x-epack-summary": "Admin portal administrator counts, TOTP enrollment, and MFA requirement. Suspended administrators are not counted.",
+      "required": [
+        "total_admins",
+        "super_admin_count",
+        "totp_enrolled_count",
+        "totp_enrolled_pct",
+        "mfa_required_count"
+      ],
+      "properties": {
+        "total_admins": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Admin Portal administrators listed who are not suspended",
+          "x-epack-label": "Total administrators",
+          "x-epack-summary": "Number of JumpCloud admin portal administrators who are not suspended.",
+          "x-epack-method": "Counts the administrators /api/users lists whose suspended flag is false, every page included."
+        },
+        "super_admin_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Administrators with the Administrator With Billing role who are not suspended",
+          "x-epack-label": "Billing administrators",
+          "x-epack-summary": "Administrators with the Administrator With Billing role, the highest JumpCloud privilege. Suspended administrators are not counted.",
+          "x-epack-method": "Counts the administrators who are not suspended and whose roleName is Administrator With Billing."
+        },
+        "totp_enrolled_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Administrators who are not suspended and have TOTP enrolled. JumpCloud reports no other administrator factor",
+          "x-epack-label": "Admins with TOTP",
+          "x-epack-summary": "Administrators who are not suspended and have an authenticator app (TOTP) enrolled. Other factors, such as security keys, are not reported by JumpCloud.",
+          "x-epack-method": "Counts the administrators who are not suspended and whose totpEnrolled flag is true."
+        },
+        "totp_enrolled_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of the administrators who are not suspended that have TOTP enrolled. Null when there are none",
+          "x-epack-label": "Admin TOTP enrollment",
+          "x-epack-summary": "Share of administrators with an authenticator app (TOTP) enrolled, among those who are not suspended. Admins without it may still use another factor.",
+          "x-epack-method": "Divides the administrators with TOTP enrolled by all administrators who are not suspended.",
+          "x-epack-numerator": "totp_enrolled_count",
+          "x-epack-denominator": "total_admins"
+        },
+        "mfa_required_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Administrators who are not suspended and whose account requires MFA at sign-in",
+          "x-epack-label": "Admins required to use MFA",
+          "x-epack-summary": "Administrators who are not suspended and whose account requires MFA at sign-in. A requirement does not show which factor they enrolled.",
+          "x-epack-method": "Counts the administrators who are not suspended and whose enableMultiFactor flag is true."
+        },
+        "partial": {
+          "type": "boolean",
+          "description": "True when fewer administrators were read than the totalCount JumpCloud reports. Left out when every one was read.",
+          "x-epack-label": "Administrator list incomplete",
+          "x-epack-summary": "True when fewer administrators were fetched than JumpCloud reported, so administrator counts cover only part of the list.",
+          "x-epack-method": "Compares the administrators read from /api/users with the totalCount JumpCloud reports, and is true when fewer were read."
+        }
+      }
+    },
+    "apps": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Applications in the application list. Left out, with a gap, when they could not be listed",
+      "x-epack-label": "SSO applications",
+      "x-epack-summary": "Single sign-on application coverage.",
+      "required": [
+        "total_apps",
+        "sso_enabled_apps",
+        "sso_coverage_pct"
+      ],
+      "properties": {
+        "total_apps": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Applications listed, with or without an SSO type",
+          "x-epack-label": "Total applications",
+          "x-epack-summary": "Applications in JumpCloud's application list, with or without SSO set up.",
+          "x-epack-method": "Counts the applications /api/applications lists, every page included."
+        },
+        "sso_enabled_apps": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Applications with an SSO type set",
+          "x-epack-label": "SSO-enabled apps",
+          "x-epack-summary": "Applications with an SSO type set up.",
+          "x-epack-method": "Counts the applications that have an SSO type set."
+        },
+        "sso_coverage_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of applications with an SSO type set. Null when there are no applications",
+          "x-epack-label": "SSO coverage",
+          "x-epack-summary": "Percentage of applications with an SSO type set up.",
+          "x-epack-method": "Divides the applications with an SSO type by all applications.",
+          "x-epack-numerator": "sso_enabled_apps",
+          "x-epack-denominator": "total_apps"
+        },
+        "partial": {
+          "type": "boolean",
+          "description": "True when fewer applications were read than the totalCount JumpCloud reports. Left out when every one was read.",
+          "x-epack-label": "Application list incomplete",
+          "x-epack-summary": "True when fewer applications were fetched than JumpCloud reported, so application counts and SSO coverage cover only part of the list.",
+          "x-epack-method": "Compares the applications read from /api/applications with the totalCount JumpCloud reports, and is true when fewer were read."
+        }
+      }
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Authentication policy configuration. Left out, with a gap, when the policies could not be listed",
+      "x-epack-label": "Authentication policies",
+      "x-epack-summary": "Summary of conditional access and authentication policies.",
+      "required": [
+        "total_policies",
+        "mfa_required_policies",
+        "has_mfa_required_policy",
+        "has_device_managed_condition",
+        "has_phishing_resistant_admin_policy"
+      ],
+      "properties": {
+        "total_policies": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Authentication policies listed, enabled or not",
+          "x-epack-label": "Total policies",
+          "x-epack-summary": "Total authentication policies configured.",
+          "x-epack-method": "Counts the authentication policies /api/v2/authn/policies lists, enabled or not."
+        },
+        "mfa_required_policies": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Enabled policies that require MFA",
+          "x-epack-label": "MFA-required policies",
+          "x-epack-summary": "Enabled policies that require MFA.",
+          "x-epack-method": "Counts the enabled policies whose effect requires MFA."
+        },
+        "has_mfa_required_policy": {
+          "type": "boolean",
+          "description": "Whether any enabled policy requires MFA. It does not show which users or sign-ins the policy covers",
+          "x-epack-label": "MFA policy configured",
+          "x-epack-summary": "Whether at least one enabled policy requires MFA. The policy may cover only some users or sign-ins.",
+          "x-epack-method": "Checks whether any enabled policy's effect requires MFA."
+        },
+        "has_device_managed_condition": {
+          "type": "boolean",
+          "description": "Whether any enabled policy has a managed-device condition",
+          "x-epack-label": "Managed-device condition configured",
+          "x-epack-summary": "Whether at least one enabled policy has a managed-device condition. The condition may apply to only some sign-ins.",
+          "x-epack-method": "Checks whether any enabled policy has a deviceManaged condition anywhere in its condition tree."
+        },
+        "has_phishing_resistant_admin_policy": {
+          "type": "boolean",
+          "description": "Whether an enabled Admin Portal policy requires MFA and allows only WebAuthn or FIDO2 factors",
+          "x-epack-label": "Phishing-resistant admin policy configured",
+          "x-epack-summary": "Whether an enabled Admin Portal policy requires MFA and allows only WebAuthn or FIDO2 keys. The policy may cover only some administrators.",
+          "x-epack-method": "Checks whether an enabled admin_portal policy requires MFA and lists only WEBAUTHN or FIDO2 factors."
+        }
+      }
+    },
+    "devices": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Managed systems. Left out, with a gap, when they could not be listed",
+      "x-epack-label": "Managed devices",
+      "x-epack-summary": "Device and MDM enrollment summary.",
+      "required": [
+        "total_systems",
+        "active_systems",
+        "mdm_enrolled",
+        "os_breakdown"
+      ],
+      "properties": {
+        "total_systems": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Distinct systems listed, one per device ID",
+          "x-epack-label": "Total systems",
+          "x-epack-summary": "Managed systems, counted once per device ID.",
+          "x-epack-method": "Counts the distinct device IDs /api/systems lists, every page included."
+        },
+        "active_systems": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Systems whose active flag is true",
+          "x-epack-label": "Active systems",
+          "x-epack-summary": "Systems that are currently active.",
+          "x-epack-method": "Counts the listed systems whose active flag is true. A system listed more than once counts once."
+        },
+        "mdm_enrolled": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Systems with evidence of MDM enrollment",
+          "x-epack-label": "MDM enrolled",
+          "x-epack-summary": "Systems with evidence of MDM enrollment, through JumpCloud or another MDM.",
+          "x-epack-method": "Counts the listed systems with an internal or external MDM vendor, or with an MDM device ID. A system listed more than once counts once."
+        },
+        "os_breakdown": {
+          "type": "object",
+          "description": "Systems by operating system, grouped into macOS, Windows, and Linux where the OS name matches",
+          "x-epack-label": "OS breakdown",
+          "x-epack-summary": "System count by operating system family.",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Systems with this operating system",
+            "x-epack-label": "Systems with this OS",
+            "x-epack-summary": "Systems whose operating system falls under this name.",
+            "x-epack-method": "Counts the listed systems by OS name, grouped into macOS, Windows, and Linux where the name matches. A system listed more than once counts once."
+          }
+        },
+        "partial": {
+          "type": "boolean",
+          "description": "True when fewer distinct systems were read than the totalCount JumpCloud reports. Left out when every one was read.",
+          "x-epack-label": "Device list incomplete",
+          "x-epack-summary": "True when fewer distinct devices were fetched than JumpCloud reported, so device counts cover only part of the fleet.",
+          "x-epack-method": "Compares the distinct device IDs read from /api/systems with the totalCount JumpCloud reports, and is true when fewer were read."
+        }
+      }
+    },
+    "device_controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Encryption, firewall, and antimalware readings across the fleet, with the device counts behind each percentage. The same figures appear in the endpoint-posture artifact. Left out, with a gap, when the systems could not be listed",
+      "x-epack-label": "Device controls",
+      "x-epack-summary": "Encryption, firewall, and antimalware readings across the fleet. Each control gives its share beside the device counts behind it, so a share from a few readable devices is not mistaken for the whole fleet.",
+      "required": [
+        "discovery_complete",
+        "max_observation_age_seconds"
+      ],
+      "properties": {
+        "discovery_complete": {
+          "type": ["boolean", "null"],
+          "description": "Whether every device JumpCloud reports was listed. When false or null, the control summaries are left out. Null when the systems list leaves it unknown",
+          "x-epack-label": "All devices found",
+          "x-epack-summary": "Whether every device JumpCloud reported was fetched. When incomplete or unknown, the per-control figures are left out.",
+          "x-epack-method": "Checks that the distinct device IDs listed number at least the totalCount JumpCloud reports for /api/systems. A list the collector's row limit stopped gives false, and a list that ends early or repeats a device gives null."
+        },
+        "max_observation_age_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How old, in seconds, a device reading may be and still count",
+          "x-epack-label": "Maximum reading age",
+          "x-epack-summary": "How old, in seconds, a device reading may be and still count. Older readings count as unknown.",
+          "x-epack-method": "Takes the max_observation_age_hours config value in seconds, which is 604800 by default."
+        },
+        "disk_encryption": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The disk encryption control across the fleet. Left out, with a gap, when a System Insights table it needs could not be read in full, or when device discovery was incomplete",
+          "x-epack-label": "Disk encryption",
+          "x-epack-summary": "Disk encryption across the fleet, with the device counts behind the share.",
+          "required": [
+            "passing_pct",
+            "passing_devices_count",
+            "failing_devices_count",
+            "unknown_devices_count",
+            "not_applicable_devices_count"
+          ],
+          "properties": {
+            "passing_pct": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Percentage of the devices whose disk encryption reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed",
+              "x-epack-label": "Disk encryption share",
+              "x-epack-summary": "Share of evaluated devices with full-disk encryption on. On Windows, every BitLocker volume must be fully encrypted with protection on, and devices with no usable reading are left out of the share.",
+              "x-epack-method": "Divides the devices whose disk encryption reading passed by the devices whose reading passed or failed. Windows readings come from System Insights bitlocker_info, and other systems' readings from the agent's fde.active flag.",
+              "x-epack-null": "No device's reading passed or failed."
+            },
+            "passing_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices whose disk encryption reading passed",
+              "x-epack-label": "Passing devices",
+              "x-epack-summary": "Devices with a current reading that passes.",
+              "x-epack-method": "Counts the devices whose disk encryption reading passed."
+            },
+            "failing_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices whose disk encryption reading failed",
+              "x-epack-label": "Failing devices",
+              "x-epack-summary": "Devices with a current reading that fails.",
+              "x-epack-goal": "lower",
+              "x-epack-method": "Counts the devices whose disk encryption reading failed."
+            },
+            "unknown_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices with no usable disk encryption reading",
+              "x-epack-label": "Devices without a reading",
+              "x-epack-summary": "Devices with no usable reading, such as one that is stale, missing, or conflicting. They count as neither passing nor failing.",
+              "x-epack-goal": "lower",
+              "x-epack-method": "Counts the devices with no usable disk encryption reading, such as one that is stale, missing, or unrecognized."
+            },
+            "not_applicable_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices the disk encryption control does not apply to",
+              "x-epack-label": "Not applicable",
+              "x-epack-summary": "Devices this control does not apply to.",
+              "x-epack-method": "Counts the devices the disk encryption control does not apply to."
+            }
+          }
+        },
+        "firewall": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The firewall control across the fleet. Left out, with a gap, when a System Insights table it needs could not be read in full, or when device discovery was incomplete",
+          "x-epack-label": "Firewall",
+          "x-epack-summary": "Firewall across the fleet, with the device counts behind the share.",
+          "required": [
+            "passing_pct",
+            "passing_devices_count",
+            "failing_devices_count",
+            "unknown_devices_count",
+            "not_applicable_devices_count"
+          ],
+          "properties": {
+            "passing_pct": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Percentage of the devices whose firewall reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed",
+              "x-epack-label": "Firewall share",
+              "x-epack-summary": "Share of evaluated devices with the host firewall turned on. Devices with no usable reading are left out of the share and counted as unknown.",
+              "x-epack-method": "Divides the devices whose firewall reading passed by the devices whose reading passed or failed. macOS readings come from System Insights alf, and Windows readings from windows_security_center.",
+              "x-epack-null": "No device's reading passed or failed."
+            },
+            "passing_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices whose firewall reading passed",
+              "x-epack-label": "Passing devices",
+              "x-epack-summary": "Devices with a current reading that passes.",
+              "x-epack-method": "Counts the devices whose firewall reading passed."
+            },
+            "failing_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices whose firewall reading failed",
+              "x-epack-label": "Failing devices",
+              "x-epack-summary": "Devices with a current reading that fails.",
+              "x-epack-goal": "lower",
+              "x-epack-method": "Counts the devices whose firewall reading failed."
+            },
+            "unknown_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices with no usable firewall reading",
+              "x-epack-label": "Devices without a reading",
+              "x-epack-summary": "Devices with no usable reading, such as one that is stale, missing, or conflicting. They count as neither passing nor failing.",
+              "x-epack-goal": "lower",
+              "x-epack-method": "Counts the devices with no usable firewall reading, such as one that is stale, missing, or unrecognized."
+            },
+            "not_applicable_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices the firewall control does not apply to",
+              "x-epack-label": "Not applicable",
+              "x-epack-summary": "Devices this control does not apply to.",
+              "x-epack-method": "Counts the devices the firewall control does not apply to."
+            }
+          }
+        },
+        "antimalware_installed": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The antimalware installed control across the fleet. Left out, with a gap, when a System Insights table it needs could not be read in full, or when device discovery was incomplete",
+          "x-epack-label": "Antimalware installed",
+          "x-epack-summary": "Antimalware installed across the fleet, with the device counts behind the share.",
+          "required": [
+            "passing_pct",
+            "passing_devices_count",
+            "failing_devices_count",
+            "unknown_devices_count",
+            "not_applicable_devices_count"
+          ],
+          "properties": {
+            "passing_pct": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Percentage of the devices whose antimalware installed reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed",
+              "x-epack-label": "Antimalware installed share",
+              "x-epack-summary": "Share of evaluated Windows devices with an antivirus product registered. Devices with no usable reading are left out of the share and counted as unknown.",
+              "x-epack-method": "Divides the devices whose antimalware installed reading passed by the devices whose reading passed or failed. Readings come from System Insights windows_security_products, on Windows only.",
+              "x-epack-null": "No device's reading passed or failed."
+            },
+            "passing_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices whose antimalware installed reading passed",
+              "x-epack-label": "Passing devices",
+              "x-epack-summary": "Devices with a current reading that passes.",
+              "x-epack-method": "Counts the devices whose antimalware installed reading passed."
+            },
+            "failing_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices whose antimalware installed reading failed",
+              "x-epack-label": "Failing devices",
+              "x-epack-summary": "Devices with a current reading that fails.",
+              "x-epack-goal": "lower",
+              "x-epack-method": "Counts the devices whose antimalware installed reading failed."
+            },
+            "unknown_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices with no usable antimalware installed reading",
+              "x-epack-label": "Devices without a reading",
+              "x-epack-summary": "Devices with no usable reading, such as one that is stale, missing, or conflicting. They count as neither passing nor failing.",
+              "x-epack-goal": "lower",
+              "x-epack-method": "Counts the devices with no usable antimalware installed reading, such as one that is stale, missing, or unrecognized."
+            },
+            "not_applicable_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices the antimalware installed control does not apply to",
+              "x-epack-label": "Not applicable",
+              "x-epack-summary": "Devices this control does not apply to.",
+              "x-epack-method": "Counts the devices the antimalware installed control does not apply to."
+            }
+          }
+        },
+        "antimalware_healthy": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The antimalware healthy control across the fleet. Left out, with a gap, when a System Insights table it needs could not be read in full, or when device discovery was incomplete",
+          "x-epack-label": "Antimalware healthy",
+          "x-epack-summary": "Antimalware healthy across the fleet, with the device counts behind the share.",
+          "required": [
+            "passing_pct",
+            "passing_devices_count",
+            "failing_devices_count",
+            "unknown_devices_count",
+            "not_applicable_devices_count"
+          ],
+          "properties": {
+            "passing_pct": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Percentage of the devices whose antimalware healthy reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed",
+              "x-epack-label": "Antimalware healthy share",
+              "x-epack-summary": "Share of evaluated Windows devices with antivirus on and signatures current. Devices with no usable reading are left out of the share and counted as unknown.",
+              "x-epack-method": "Divides the devices whose antimalware healthy reading passed by the devices whose reading passed or failed. Readings come from System Insights windows_security_products, on Windows only.",
+              "x-epack-null": "No device's reading passed or failed."
+            },
+            "passing_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices whose antimalware healthy reading passed",
+              "x-epack-label": "Passing devices",
+              "x-epack-summary": "Devices with a current reading that passes.",
+              "x-epack-method": "Counts the devices whose antimalware healthy reading passed."
+            },
+            "failing_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices whose antimalware healthy reading failed",
+              "x-epack-label": "Failing devices",
+              "x-epack-summary": "Devices with a current reading that fails.",
+              "x-epack-goal": "lower",
+              "x-epack-method": "Counts the devices whose antimalware healthy reading failed."
+            },
+            "unknown_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices with no usable antimalware healthy reading",
+              "x-epack-label": "Devices without a reading",
+              "x-epack-summary": "Devices with no usable reading, such as one that is stale, missing, or conflicting. They count as neither passing nor failing.",
+              "x-epack-goal": "lower",
+              "x-epack-method": "Counts the devices with no usable antimalware healthy reading, such as one that is stale, missing, or unrecognized."
+            },
+            "not_applicable_devices_count": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Devices the antimalware healthy control does not apply to",
+              "x-epack-label": "Not applicable",
+              "x-epack-summary": "Devices this control does not apply to.",
+              "x-epack-method": "Counts the devices the antimalware healthy control does not apply to."
+            }
+          }
+        }
+      }
+    },
+    "user_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-user detail",
+      "x-epack-label": "User inventory",
+      "x-epack-summary": "Per-user detail with state and MFA enrollment.",
+      "required": [
+        "per_user"
+      ],
+      "properties": {
+        "per_user": {
+          "type": "array",
+          "description": "One row per directory user. The rows stop at 20,000, with a partial gap",
+          "x-epack-label": "Per-user rows",
+          "x-epack-summary": "One row per directory user, with account state and MFA enrollment.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "username",
+              "email",
+              "state",
+              "mfa_enrolled",
+              "totp_enabled",
+              "webauthn_enabled",
+              "account_locked"
+            ],
+            "properties": {
+              "username": {
+                "type": "string",
+                "x-epack-label": "Username",
+                "x-epack-summary": "The user's JumpCloud username."
+              },
+              "email": {
+                "type": "string",
+                "x-epack-label": "Email",
+                "x-epack-summary": "The user's email address."
+              },
+              "state": {
+                "type": "string",
+                "description": "Account state, such as ACTIVATED, STAGED, or SUSPENDED",
+                "x-epack-label": "State",
+                "x-epack-summary": "Account state, such as ACTIVATED, STAGED, or SUSPENDED."
+              },
+              "mfa_enrolled": {
+                "type": "boolean",
+                "description": "Whether the user has any MFA method enrolled",
+                "x-epack-label": "MFA enrolled",
+                "x-epack-summary": "Whether this user has any MFA method enrolled."
+              },
+              "totp_enabled": {
+                "type": "boolean",
+                "description": "Whether the user has a TOTP authenticator enrolled",
+                "x-epack-label": "TOTP enabled",
+                "x-epack-summary": "Whether a TOTP authenticator is enrolled."
+              },
+              "webauthn_enabled": {
+                "type": "boolean",
+                "description": "Whether the user has a WebAuthn or FIDO2 key enrolled",
+                "x-epack-label": "WebAuthn enabled",
+                "x-epack-summary": "Whether a phishing-resistant WebAuthn/FIDO2 key is enrolled."
+              },
+              "account_locked": {
+                "type": "boolean",
+                "description": "Whether the account is locked",
+                "x-epack-label": "Locked",
+                "x-epack-summary": "Whether the account is currently locked."
+              },
+              "created": {
+                "type": "string",
+                "description": "When the user was created",
+                "x-epack-label": "Created",
+                "x-epack-summary": "When the user was created in JumpCloud."
+              }
+            }
+          }
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when the rows stopped at 20,000. Left out otherwise",
+          "x-epack-label": "User list capped",
+          "x-epack-summary": "True if the per-user rows stopped at the 20,000-row cap. Counts and percentages still cover every fetched user."
+        },
+        "truncated_dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "User rows the 20,000-row limit left out",
+          "x-epack-label": "Users omitted",
+          "x-epack-summary": "How many user rows the 20,000-row cap left out."
+        }
+      },
+      "x-epack-level": "audit"
+    },
+    "app_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-application detail. Left out, with a gap, when the applications could not be listed",
+      "x-epack-label": "Application inventory",
+      "x-epack-summary": "Per-application SSO detail.",
+      "required": [
+        "per_app"
+      ],
+      "properties": {
+        "per_app": {
+          "type": "array",
+          "description": "One row per application",
+          "x-epack-label": "Per-application rows",
+          "x-epack-summary": "One row per JumpCloud application, with its SSO type.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "sso_enabled"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "x-epack-label": "Name",
+                "x-epack-summary": "Application display name."
+              },
+              "sso_type": {
+                "type": "string",
+                "description": "The application's SSO type, such as saml or oidc",
+                "x-epack-label": "SSO type",
+                "x-epack-summary": "The application's SSO protocol, such as SAML or OIDC."
+              },
+              "sso_enabled": {
+                "type": "boolean",
+                "description": "Whether the application has an SSO type set",
+                "x-epack-label": "SSO configured",
+                "x-epack-summary": "Whether this application has an SSO type configured in JumpCloud."
+              }
+            }
+          }
+        }
+      },
+      "x-epack-level": "audit"
+    },
+    "group_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "User and system groups. Left out, with gaps, when neither list could be read",
+      "x-epack-label": "Group inventory",
+      "x-epack-summary": "User and device groups defined in JumpCloud.",
+      "required": [
+        "user_groups",
+        "system_groups"
+      ],
+      "properties": {
+        "user_groups": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "description": "User groups. Null, with a gap, when they could not be listed",
+          "x-epack-label": "User groups",
+          "x-epack-summary": "Groups of users that grant access to applications, devices, and policies.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "x-epack-label": "Name",
+                "x-epack-summary": "The user group name."
+              },
+              "type": {
+                "type": "string",
+                "x-epack-label": "Type",
+                "x-epack-summary": "JumpCloud group type."
+              }
+            }
+          }
+        },
+        "system_groups": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "description": "System groups. Null, with a gap, when they could not be listed",
+          "x-epack-label": "Device groups",
+          "x-epack-summary": "Groups of devices that policies and access apply to.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "x-epack-label": "Name",
+                "x-epack-summary": "The device group name."
+              },
+              "type": {
+                "type": "string",
+                "x-epack-label": "Type",
+                "x-epack-summary": "JumpCloud group type."
+              }
+            }
+          }
+        }
+      },
+      "x-epack-level": "audit"
+    },
+    "device_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-device detail. Left out, with a gap, when the systems could not be listed",
+      "x-epack-label": "Device inventory",
+      "x-epack-summary": "Per-device detail with OS and MDM status.",
+      "required": [
+        "per_device"
+      ],
+      "properties": {
+        "per_device": {
+          "type": "array",
+          "description": "One row per system record. The rows stop at 20,000, with a partial gap",
+          "x-epack-label": "Per-device rows",
+          "x-epack-summary": "One row per device, with its OS, agent, and MDM enrollment.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "device_id",
+              "hostname",
+              "os",
+              "active",
+              "mdm_enrolled"
+            ],
+            "properties": {
+              "device_id": {
+                "type": "string",
+                "x-epack-label": "Device ID",
+                "x-epack-summary": "JumpCloud's identifier for the device."
+              },
+              "hostname": {
+                "type": "string",
+                "x-epack-label": "Hostname",
+                "x-epack-summary": "Device hostname."
+              },
+              "os": {
+                "type": "string",
+                "x-epack-label": "OS",
+                "x-epack-summary": "Operating system."
+              },
+              "os_version": {
+                "type": "string",
+                "x-epack-label": "OS version",
+                "x-epack-summary": "Operating system version the JumpCloud agent reports."
+              },
+              "active": {
+                "type": "boolean",
+                "description": "Whether the system's active flag is true",
+                "x-epack-label": "Active",
+                "x-epack-summary": "Whether the system is currently active."
+              },
+              "agent_version": {
+                "type": "string",
+                "x-epack-label": "Agent version",
+                "x-epack-summary": "Version of the JumpCloud agent installed on the device."
+              },
+              "mdm_enrolled": {
+                "type": "boolean",
+                "description": "Whether the system shows evidence of MDM enrollment",
+                "x-epack-label": "MDM enrolled",
+                "x-epack-summary": "Whether this device shows evidence of MDM enrollment, through JumpCloud or another MDM."
+              },
+              "controls": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "The device's reading for each control",
+                "x-epack-label": "Controls",
+                "x-epack-summary": "This device's reading for each control.",
+                "properties": {
+                  "disk_encryption": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "This device's disk encryption reading. Left out, with a gap, when a System Insights table it needs could not be read in full",
+                    "x-epack-label": "Disk encryption",
+                    "x-epack-summary": "This device's disk encryption reading and when it was observed.",
+                    "required": [
+                      "state"
+                    ],
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "pass",
+                          "fail",
+                          "unknown",
+                          "not_applicable"
+                        ],
+                        "description": "The device's disk encryption reading. Unknown means no usable reading",
+                        "x-epack-label": "Disk encryption",
+                        "x-epack-summary": "This device's disk encryption reading, which is pass, fail, unknown, or not applicable. Unknown means no usable reading."
+                      },
+                      "observed_at": {
+                        "type": "string",
+                        "description": "When the device reported the reading. Absent when the source gives no time",
+                        "x-epack-label": "Disk encryption observed",
+                        "x-epack-summary": "When the device reported this reading. Absent when the source gives no time.",
+                        "format": "date-time"
+                      }
+                    }
+                  },
+                  "firewall": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "This device's firewall reading. Left out, with a gap, when a System Insights table it needs could not be read in full",
+                    "x-epack-label": "Firewall",
+                    "x-epack-summary": "This device's firewall reading and when it was observed.",
+                    "required": [
+                      "state"
+                    ],
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "pass",
+                          "fail",
+                          "unknown",
+                          "not_applicable"
+                        ],
+                        "description": "The device's firewall reading. Unknown means no usable reading",
+                        "x-epack-label": "Firewall",
+                        "x-epack-summary": "This device's firewall reading, which is pass, fail, unknown, or not applicable. Unknown means no usable reading."
+                      },
+                      "observed_at": {
+                        "type": "string",
+                        "description": "When the device reported the reading. Absent when the source gives no time",
+                        "x-epack-label": "Firewall observed",
+                        "x-epack-summary": "When the device reported this reading. Absent when the source gives no time.",
+                        "format": "date-time"
+                      }
+                    }
+                  },
+                  "antimalware_installed": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "This device's antimalware installed reading. Left out, with a gap, when a System Insights table it needs could not be read in full",
+                    "x-epack-label": "Antimalware installed",
+                    "x-epack-summary": "This device's antimalware installed reading and when it was observed.",
+                    "required": [
+                      "state"
+                    ],
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "pass",
+                          "fail",
+                          "unknown",
+                          "not_applicable"
+                        ],
+                        "description": "The device's antimalware installed reading. Unknown means no usable reading",
+                        "x-epack-label": "Antimalware installed",
+                        "x-epack-summary": "This device's antimalware installed reading, which is pass, fail, unknown, or not applicable. Unknown means no usable reading."
+                      },
+                      "observed_at": {
+                        "type": "string",
+                        "description": "When the device reported the reading. Absent when the source gives no time",
+                        "x-epack-label": "Antimalware installed observed",
+                        "x-epack-summary": "When the device reported this reading. Absent when the source gives no time.",
+                        "format": "date-time"
+                      }
+                    }
+                  },
+                  "antimalware_healthy": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "This device's antimalware healthy reading. Left out, with a gap, when a System Insights table it needs could not be read in full",
+                    "x-epack-label": "Antimalware healthy",
+                    "x-epack-summary": "This device's antimalware healthy reading and when it was observed.",
+                    "required": [
+                      "state"
+                    ],
+                    "properties": {
+                      "state": {
+                        "enum": [
+                          "pass",
+                          "fail",
+                          "unknown",
+                          "not_applicable"
+                        ],
+                        "description": "The device's antimalware healthy reading. Unknown means no usable reading",
+                        "x-epack-label": "Antimalware healthy",
+                        "x-epack-summary": "This device's antimalware healthy reading, which is pass, fail, unknown, or not applicable. Unknown means no usable reading."
+                      },
+                      "observed_at": {
+                        "type": "string",
+                        "description": "When the device reported the reading. Absent when the source gives no time",
+                        "x-epack-label": "Antimalware healthy observed",
+                        "x-epack-summary": "When the device reported this reading. Absent when the source gives no time.",
+                        "format": "date-time"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when the rows stopped at 20,000. Left out otherwise",
+          "x-epack-label": "Device list capped",
+          "x-epack-summary": "True if the per-device rows stopped at the 20,000-row cap. Device counts still cover every fetched device."
+        },
+        "truncated_dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Device rows the 20,000-row limit left out",
+          "x-epack-label": "Devices omitted",
+          "x-epack-summary": "How many device rows the 20,000-row cap left out."
+        }
+      },
+      "x-epack-level": "audit"
+    },
+    "policy_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-policy configuration. Left out, with a gap, when the policies could not be listed",
+      "x-epack-label": "Authentication policy inventory",
+      "x-epack-summary": "Each conditional access policy and what it requires, as configured.",
+      "required": [
+        "auth_policies"
+      ],
+      "properties": {
+        "auth_policies": {
+          "type": "array",
+          "description": "One row per authentication policy",
+          "x-epack-label": "Authentication policies",
+          "x-epack-summary": "One row per authentication policy, as configured. A policy may cover only some users or sign-ins.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "type",
+              "disabled",
+              "mfa_required",
+              "device_managed"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "x-epack-label": "Name",
+                "x-epack-summary": "The policy name."
+              },
+              "type": {
+                "type": "string",
+                "description": "What sign-in the policy governs, such as user_portal or admin_portal",
+                "x-epack-label": "Applies to",
+                "x-epack-summary": "What sign-in the policy governs, such as the User Portal, Admin Portal, or SSO applications."
+              },
+              "disabled": {
+                "type": "boolean",
+                "description": "Whether the policy is turned off",
+                "x-epack-label": "Disabled",
+                "x-epack-summary": "Whether the policy is turned off.",
+                "x-epack-goal": false
+              },
+              "mfa_required": {
+                "type": "boolean",
+                "description": "Whether the policy's effect requires MFA",
+                "x-epack-label": "MFA required",
+                "x-epack-summary": "Whether the policy requires MFA when it applies."
+              },
+              "allowed_factors": {
+                "type": "array",
+                "description": "The MFA factors the policy accepts. Absent when it accepts any factor",
+                "x-epack-label": "Allowed MFA factors",
+                "x-epack-summary": "MFA factors the policy accepts. Absent when any factor is accepted.",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "device_managed": {
+                "type": "boolean",
+                "description": "Whether the policy has a deviceManaged condition",
+                "x-epack-label": "Managed device condition",
+                "x-epack-summary": "Whether the policy has a condition on the device being managed by JumpCloud."
+              }
+            }
+          }
+        }
+      },
+      "x-epack-level": "audit"
+    },
+    "audit_log": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Directory Insights events from the last seven days. Left out, with a gap, when they could not be read",
+      "x-epack-label": "Directory audit log",
+      "x-epack-summary": "Recent Directory Insights events, such as sign-ins and administrative changes.",
+      "required": [
+        "window_days",
+        "count_by_type"
+      ],
+      "properties": {
+        "window_days": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many days of events were requested",
+          "x-epack-label": "Window",
+          "x-epack-summary": "How many days of events were requested."
+        },
+        "count_by_type": {
+          "type": "object",
+          "description": "Events by Directory Insights event type, over the events read",
+          "x-epack-label": "Events by type",
+          "x-epack-summary": "Event counts by Directory Insights event type, over the events fetched. Not a complete total when the event list was capped.",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Events of this type among the events read",
+            "x-epack-label": "Events of this type",
+            "x-epack-summary": "Events of this type among the events read."
+          }
+        },
+        "events": {
+          "type": "array",
+          "description": "One row per event. The rows stop at 5,000, with a partial gap",
+          "x-epack-label": "Events",
+          "x-epack-summary": "One row per Directory Insights event.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "event_type",
+              "timestamp"
+            ],
+            "properties": {
+              "event_type": {
+                "type": "string",
+                "x-epack-label": "Event type",
+                "x-epack-summary": "The Directory Insights event type."
+              },
+              "timestamp": {
+                "type": "string",
+                "x-epack-label": "Time",
+                "x-epack-summary": "When the event happened."
+              },
+              "actor": {
+                "type": "string",
+                "description": "Email of whoever initiated the event, when JumpCloud reports one",
+                "x-epack-label": "Actor",
+                "x-epack-summary": "Email of the person or account that initiated the event, when JumpCloud reports one."
+              }
+            }
+          }
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when more events were read than the 5,000 the collector keeps. Left out otherwise",
+          "x-epack-label": "Event list capped",
+          "x-epack-summary": "True if more events were available than the 5,000 the collector keeps."
+        },
+        "truncated_dropped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Events the 5,000-row limit left out",
+          "x-epack-label": "Events omitted",
+          "x-epack-summary": "How many fetched events the 5,000-row cap left out."
+        }
+      },
+      "x-epack-level": "internal"
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Collection problems as text. The gaps in the collector result say the same for each value left out",
+      "x-epack-label": "Collection gaps",
+      "x-epack-summary": "What could not be gathered, and why.",
+      "properties": {
+        "permission_errors": {
+          "type": "array",
+          "description": "Surfaces skipped because the API key was refused",
+          "x-epack-label": "Permission gaps",
+          "x-epack-summary": "Surfaces skipped because the API key lacked a required permission.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "description": "Other problems during collection",
+          "x-epack-label": "Warnings",
+          "x-epack-summary": "Non-fatal warnings raised during collection.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

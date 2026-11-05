@@ -1,9 +1,16 @@
 package collector
 
+import (
+	"encoding/json"
+
+	"github.com/locktivity/epack/componentsdk"
+)
+
 // EndpointPosture is the normalized evidencepack/endpoint-posture@v1 artifact.
-// Every metric is optional: an absent value means no usable reading, and the
-// availability list explains why. Pointers keep a known zero or false
-// distinguishable from an unknown reading.
+// Every metric is optional. An absent value has no usable reading, and the
+// availability list says why. Pointers keep a known zero or false apart from
+// an unknown reading. The counts, the coverage, and the device rows are
+// written from the audit level, as the schema marks them.
 type EndpointPosture struct {
 	SchemaVersion  string                    `json:"schema_version"`
 	CollectedAt    string                    `json:"collected_at"`
@@ -13,54 +20,73 @@ type EndpointPosture struct {
 	Fleet          *EndpointFleet            `json:"fleet,omitempty"`
 	Hardening      *EndpointHardening        `json:"hardening,omitempty"`
 	Protection     *EndpointProtection       `json:"protection,omitempty"`
-	MetricCoverage map[string]MetricCoverage `json:"metric_coverage"`
+	MetricCoverage map[string]MetricCoverage `json:"metric_coverage,omitempty"`
 	Availability   []AvailabilityEntry       `json:"availability"`
 
-	Devices     []EndpointDevice         `json:"devices,omitempty"`
-	Inventories map[string]InventoryMeta `json:"inventories,omitempty"`
+	Devices []EndpointDevice `json:"devices,omitempty"`
 
 	// controlsByDevice holds every device's readings for the detailed
-	// artifact's inventory; it is not serialized.
+	// artifact's inventory. It is not serialized.
 	controlsByDevice map[string]map[string]ControlObservation
+	// coverage holds every measured control's device counts, at every
+	// level, for the detailed artifact. It is not serialized.
+	coverage map[string]MetricCoverage
+	// unread holds, for each control, the devices whose reading could not
+	// be read because a System Insights table failed or was cut short. It
+	// is not serialized.
+	unread map[string]unreadControl
+	// noSource holds the metrics no device in the fleet has a reading
+	// source for, with the code of each one's gap. It is not serialized.
+	noSource map[string]componentsdk.Code
+	// truncatedDevices counts the device rows left out at MaxDevices.
+	truncatedDevices int
+}
+
+// unreadControl is one control's devices whose reading was not read, with
+// the first error that left one out.
+type unreadControl struct {
+	devices map[string]error
+	first   error
 }
 
 type EndpointScope struct {
-	DiscoveryComplete        bool   `json:"discovery_complete"`
-	ObservedDevicesCount     int    `json:"observed_devices_count"`
+	// DiscoveryComplete is nil when JumpCloud's systems list leaves it
+	// unknown, as when the list ends before the total JumpCloud reported.
+	DiscoveryComplete        *bool  `json:"discovery_complete"`
+	ObservedDeviceCount      *int   `json:"observed_device_count,omitempty"`
 	Description              string `json:"description"`
 	MaxObservationAgeSeconds int64  `json:"max_observation_age_seconds"`
 }
 
-// EndpointFleet holds complete-population totals. It is omitted entirely when
-// discovery is incomplete, because a fetched sample is not the fleet.
+// EndpointFleet holds totals over the whole fleet. It is left out when
+// discovery is incomplete, because the devices read are not the fleet.
 type EndpointFleet struct {
-	DevicesCount            *int           `json:"devices_count,omitempty"`
-	ManagedDevicesCount     *int           `json:"managed_devices_count,omitempty"`
-	MDMEnrolledDevicesCount *int           `json:"mdm_enrolled_devices_count,omitempty"`
-	DevicesByOS             map[string]int `json:"devices_by_os,omitempty"`
+	DevicesPresent         *bool          `json:"devices_present,omitempty"`
+	DeviceCount            *int           `json:"device_count,omitempty"`
+	ManagedDeviceCount     *int           `json:"managed_device_count,omitempty"`
+	MDMEnrolledDeviceCount *int           `json:"mdm_enrolled_device_count,omitempty"`
+	MDMEnrolledPct         Percentage     `json:"mdm_enrolled_pct,omitzero"`
+	DevicesByOS            map[string]int `json:"devices_by_os,omitempty"`
 }
 
 type EndpointHardening struct {
-	DiskEncryptionPct      *float64 `json:"disk_encryption_pct,omitempty"`
-	ScreenLockCompliantPct *float64 `json:"screen_lock_compliant_pct,omitempty"`
-	FirewallEnabledPct     *float64 `json:"firewall_enabled_pct,omitempty"`
+	DiskEncryptionPct  Percentage `json:"disk_encryption_pct,omitzero"`
+	FirewallEnabledPct Percentage `json:"firewall_enabled_pct,omitzero"`
 }
 
 type EndpointProtection struct {
-	AntimalwareInstalledPct *float64 `json:"antimalware_installed_pct,omitempty"`
-	AntimalwareHealthyPct   *float64 `json:"antimalware_healthy_pct,omitempty"`
-	EDRInstalledPct         *float64 `json:"edr_installed_pct,omitempty"`
-	EDRHealthyPct           *float64 `json:"edr_healthy_pct,omitempty"`
+	AntimalwareInstalledPct Percentage `json:"antimalware_installed_pct,omitzero"`
+	AntimalwareHealthyPct   Percentage `json:"antimalware_healthy_pct,omitzero"`
 }
 
 // MetricCoverage partitions the in-scope fleet for one metric. The emitted
-// percentage is passing / (passing + failing); unknown devices are never
+// percentage is passing / (passing + failing). Unknown devices are never
 // folded into either side.
 type MetricCoverage struct {
-	PassingDevicesCount       int `json:"passing_devices_count"`
-	FailingDevicesCount       int `json:"failing_devices_count"`
-	UnknownDevicesCount       int `json:"unknown_devices_count"`
-	NotApplicableDevicesCount int `json:"not_applicable_devices_count"`
+	PassingDevicesCount       int `json:"passing_device_count"`
+	FailingDevicesCount       int `json:"failing_device_count"`
+	UnknownDevicesCount       int `json:"unknown_device_count"`
+	NotApplicableDevicesCount int `json:"not_applicable_device_count"`
 }
 
 type AvailabilityEntry struct {
@@ -72,7 +98,7 @@ type AvailabilityEntry struct {
 const (
 	reasonUnsupported      = "unsupported"
 	reasonPermissionDenied = "permission_denied"
-	reasonNotConfigured    = "not_configured"
+	reasonNotRead          = "not_read"
 	reasonStale            = "stale"
 	reasonPartial          = "partial"
 	reasonSourceError      = "source_error"
@@ -115,12 +141,24 @@ type LocalAdminAccount struct {
 	Username  string `json:"username,omitempty"`
 }
 
-// InventoryMeta describes collection and output completeness for an
-// inventory array, keyed by the array's path.
-type InventoryMeta struct {
-	CollectionComplete bool `json:"collection_complete"`
-	OutputTruncated    bool `json:"output_truncated"`
-	ReturnedRowsCount  int  `json:"returned_rows_count"`
-	TotalRowsCount     *int `json:"total_rows_count,omitempty"`
-	DroppedRowsCount   *int `json:"dropped_rows_count,omitempty"`
+// Percentage is a normalized percentage. It is left out when Read is false.
+// Otherwise it is written as Value, which is nil over an empty population.
+type Percentage struct {
+	Value *float64
+	Read  bool
+}
+
+// IsZero reports whether the percentage was not read, for omitzero.
+func (p Percentage) IsZero() bool { return !p.Read }
+
+// MarshalJSON writes the value, or null.
+func (p Percentage) MarshalJSON() ([]byte, error) { return json.Marshal(p.Value) }
+
+// known returns a read percentage of v.
+func known(v *int) Percentage {
+	if v == nil {
+		return Percentage{Read: true}
+	}
+	f := float64(*v)
+	return Percentage{Value: &f, Read: true}
 }

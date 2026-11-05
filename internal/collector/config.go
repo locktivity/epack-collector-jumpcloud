@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/locktivity/epack-collector-jumpcloud/internal/jumpcloud"
+	"github.com/locktivity/epack/componentsdk"
 )
 
 // StatusFunc is called to report indeterminate status updates.
@@ -21,6 +22,13 @@ type Config struct {
 	MaxObservationAge time.Duration
 	OnStatus          StatusFunc   `json:"-"`
 	OnProgress        ProgressFunc `json:"-"`
+	// Recorder records the gaps of the run. Nil records them nowhere.
+	Recorder *componentsdk.Recorder `json:"-"`
+	// Now returns the time of the run. Nil uses time.Now.
+	Now func() time.Time `json:"-"`
+	// Selected reports whether the run collects the artifact at a
+	// location, as componentsdk.Selected does. Nil collects every one.
+	Selected func(componentsdk.Location) bool `json:"-"`
 }
 
 // DefaultMaxObservationAge is a collection rule, not a security standard:
@@ -62,6 +70,18 @@ type Collector struct {
 // New creates a Collector.
 func New(cfg Config, client JumpCloudClient) *Collector {
 	return &Collector{cfg: cfg, client: client}
+}
+
+func (c *Collector) now() time.Time {
+	if c.cfg.Now != nil {
+		return c.cfg.Now()
+	}
+	return time.Now()
+}
+
+// selected reports whether the run collects the artifact at path.
+func (c *Collector) selected(path string) bool {
+	return c.cfg.Selected == nil || c.cfg.Selected(componentsdk.Location{Path: path})
 }
 
 func (c *Collector) status(msg string) {

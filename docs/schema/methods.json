@@ -1,0 +1,41 @@
+{
+  "evidencepack/endpoint-posture@v1": {
+    "/devices/*/in_scope": "Writes true for every system record, since the scope is every device JumpCloud lists.",
+    "/fleet/device_count": "Counts the distinct device IDs /api/systems lists, every page included.",
+    "/fleet/devices_by_os/*": "Counts the devices /api/systems lists in each OS family, read from each device's osFamily, or from its os when osFamily is empty.",
+    "/fleet/devices_present": "Checks whether /api/systems lists any device.",
+    "/fleet/managed_device_count": "Counts every listed device, since each system record is a device registered with JumpCloud through its agent or MDM.",
+    "/fleet/mdm_enrolled_device_count": "Counts the listed devices with an internal or external MDM vendor, or with an MDM device ID.",
+    "/fleet/mdm_enrolled_pct": "Divides the devices with evidence of MDM enrollment by all listed devices, rounded down.",
+    "/hardening/disk_encryption_pct": "Divides the devices whose disk encryption reading passed by those whose reading passed or failed, rounded down. Windows readings come from System Insights bitlocker_info, and other systems' readings from the agent's fde.active flag.",
+    "/hardening/firewall_enabled_pct": "Divides the devices whose firewall reading passed by those whose reading passed or failed, rounded down. macOS readings come from System Insights alf, and Windows readings from windows_security_center.",
+    "/protection/antimalware_healthy_pct": "Divides the Windows devices with an antivirus product that is on with current signatures by those whose reading passed or failed, rounded down. Readings come from System Insights windows_security_products.",
+    "/protection/antimalware_installed_pct": "Divides the Windows devices with an antivirus product registered by those whose reading passed or failed, rounded down. Readings come from System Insights windows_security_products.",
+    "/scope/discovery_complete": "Checks that the distinct device IDs listed number at least the totalCount JumpCloud reports for /api/systems. A list the collector's row limit stopped gives false, and a list that ends early or repeats a device gives null.",
+    "/scope/max_observation_age_seconds": "Takes the max_observation_age_hours config value in seconds, which is 604800 by default.",
+    "/scope/observed_device_count": "Counts the distinct device IDs /api/systems lists, whenever each device last reported."
+  },
+  "evidencepack/idp-posture@v1": {
+    "/app_security/app_count": "Counts the applications /api/applications lists, every page included.",
+    "/app_security/apps_present": "Checks whether /api/applications lists any application.",
+    "/app_security/sso_app_count": "Counts the applications that have an SSO type set.",
+    "/app_security/sso_coverage_pct": "Divides the applications with an SSO type by all applications, rounded down.",
+    "/lifecycle/account_count": "Counts the users /api/systemusers lists, in every state.",
+    "/lifecycle/accounts_present": "Checks whether /api/systemusers lists any user.",
+    "/lifecycle/suspended_account_count": "Counts the listed users whose state is SUSPENDED.",
+    "/lifecycle/suspended_pct": "Divides the suspended users by all listed users, rounded up.",
+    "/privileged_access/privileged_mfa_coverage_pct": "Divides the administrators with TOTP enrolled by all administrators who are not suspended, rounded down. It is written only when every administrator who is not suspended has TOTP enrolled, since JumpCloud reports no other administrator factor.",
+    "/privileged_access/privileged_mfa_user_count": "Counts the administrators who are not suspended and whose totpEnrolled flag is true. It is written only when every administrator who is not suspended has TOTP enrolled.",
+    "/privileged_access/privileged_users_count": "Counts the administrators /api/users lists whose suspended flag is false, every page included.",
+    "/privileged_access/privileged_users_present": "Checks whether /api/users lists any administrator who is not suspended.",
+    "/privileged_access/super_admin_count": "Counts the administrators who are not suspended and whose roleName is Administrator With Billing.",
+    "/user_security/locked_out_pct": "Divides the active users whose account_locked flag is true by all active users, rounded up.",
+    "/user_security/locked_out_user_count": "Counts the active users whose account_locked flag is true. Active users are those neither suspended nor staged.",
+    "/user_security/mfa_coverage_pct": "Divides the active users with an enrolled MFA method by all active users, rounded down.",
+    "/user_security/mfa_phishing_resistant_pct": "Divides the active users whose mfaEnrollment WebAuthn status is ENROLLED by all active users, rounded down.",
+    "/user_security/mfa_user_count": "Counts the active users with an enrolled MFA method. A user with no mfaEnrollment record counts when totp_enabled is true.",
+    "/user_security/phishing_resistant_user_count": "Counts the active users whose mfaEnrollment WebAuthn status is ENROLLED.",
+    "/user_security/user_count": "Counts the users /api/systemusers lists whose state is neither SUSPENDED nor STAGED.",
+    "/user_security/users_present": "Checks whether /api/systemusers lists any user whose state is neither SUSPENDED nor STAGED."
+  }
+}

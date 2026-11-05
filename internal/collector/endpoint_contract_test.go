@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -13,13 +14,21 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// testdata/endpoint-posture-v1.schema.json mirrors the shared contract in
-// locktivity docs/specs/endpoint-posture. Keep the two in sync.
+// compileEndpointSchema compiles the SDK's endpoint-posture schema, which
+// Emit checks the artifact against.
 func compileEndpointSchema(t *testing.T) *jsonschema.Schema {
 	t.Helper()
+	raw := componentsdk.NormalizedSchemaJSON(endpointPostureSchema)
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
 	c := jsonschema.NewCompiler()
 	c.AssertFormat()
-	schema, err := c.Compile("testdata/endpoint-posture-v1.schema.json")
+	if err := c.AddResource("endpoint-posture.json", doc); err != nil {
+		t.Fatalf("add schema: %v", err)
+	}
+	schema, err := c.Compile("endpoint-posture.json")
 	if err != nil {
 		t.Fatalf("compile schema: %v", err)
 	}
@@ -96,12 +105,12 @@ func TestEndpoint_OutputMeetsContract(t *testing.T) {
 func TestEndpoint_SchemaRejectsFleetValuesWhenDiscoveryIncomplete(t *testing.T) {
 	schema := compileEndpointSchema(t)
 	partial := `{"schema_version":"1.0.0","collected_at":"2026-10-22T00:00:00Z","provider":"jumpcloud",
-		"scope":{"discovery_complete":false,"observed_devices_count":1,"description":"provider_visible_devices","max_observation_age_seconds":604800},
+		"scope":{"discovery_complete":false,"observed_device_count":1,"description":"provider_visible_devices","max_observation_age_seconds":604800},
 		"metric_coverage":{},"availability":[]}`
 	for name, extra := range map[string]string{
-		"fleet totals":   `"fleet":{"devices_count":1}`,
+		"fleet totals":   `"fleet":{"device_count":1}`,
 		"a percentage":   `"hardening":{"disk_encryption_pct":100}`,
-		"coverage entry": `"metric_coverage":{"hardening.disk_encryption_pct":{"passing_devices_count":1,"failing_devices_count":0,"unknown_devices_count":0,"not_applicable_devices_count":0}}`,
+		"coverage entry": `"metric_coverage":{"hardening.disk_encryption_pct":{"passing_device_count":1,"failing_device_count":0,"unknown_device_count":0,"not_applicable_device_count":0}}`,
 	} {
 		var doc map[string]any
 		if err := json.Unmarshal([]byte(partial), &doc); err != nil {
@@ -131,9 +140,9 @@ func TestEndpoint_SchemaRejectsFleetValuesWhenDiscoveryIncomplete(t *testing.T) 
 func TestEndpoint_SchemaRequiresCoverageForEveryPercentage(t *testing.T) {
 	schema := compileEndpointSchema(t)
 	base := `{"schema_version":"1.0.0","collected_at":"2026-10-22T00:00:00Z","provider":"jumpcloud",
-		"scope":{"discovery_complete":true,"observed_devices_count":1,"description":"provider_visible_devices","max_observation_age_seconds":604800},
+		"scope":{"discovery_complete":true,"observed_device_count":1,"description":"provider_visible_devices","max_observation_age_seconds":604800},
 		"metric_coverage":{},"availability":[]}`
-	coverage := `{"passing_devices_count":1,"failing_devices_count":0,"unknown_devices_count":0,"not_applicable_devices_count":0}`
+	coverage := `{"passing_device_count":1,"failing_device_count":0,"unknown_device_count":0,"not_applicable_device_count":0}`
 	doc := func(extra string) map[string]any {
 		t.Helper()
 		var d map[string]any
@@ -180,7 +189,7 @@ func TestEndpoint_SchemaRequiresCoverageForEveryPercentage(t *testing.T) {
 
 func contractProblems(ep *EndpointPosture, level componentsdk.Level) []string {
 	var problems []string
-	values := map[string]*float64{}
+	values := map[string]Percentage{}
 	if ep.Hardening != nil {
 		values["hardening.disk_encryption_pct"] = ep.Hardening.DiskEncryptionPct
 		values["hardening.firewall_enabled_pct"] = ep.Hardening.FirewallEnabledPct
@@ -193,46 +202,48 @@ func contractProblems(ep *EndpointPosture, level componentsdk.Level) []string {
 	for _, a := range ep.Availability {
 		explained[a.Path] = true
 	}
+	devices := len(ep.controlsByDevice)
 
-	if !ep.Scope.DiscoveryComplete {
+	if !ep.discovered() {
 		if ep.Fleet != nil || ep.Hardening != nil || ep.Protection != nil || len(ep.MetricCoverage) > 0 {
 			problems = append(problems, "incomplete discovery must omit fleet, percentages, and coverage")
 		}
 	}
 
+	audit := level.AtLeast(componentsdk.LevelAudit)
 	for _, m := range measuredMetrics {
 		cov, hasCov := ep.MetricCoverage[m.path]
 		value := values[m.path]
-		if value != nil && !hasCov {
+		if value.Value != nil && audit && !hasCov {
 			problems = append(problems, m.path+": percentage without coverage")
 		}
-		if value == nil && !explained[m.path] && ep.Scope.ObservedDevicesCount > 0 {
+		if value.Value == nil && !explained[m.path] && devices > 0 {
 			problems = append(problems, m.path+": omitted without an availability entry")
 		}
 		if !hasCov {
 			continue
 		}
 		total := cov.PassingDevicesCount + cov.FailingDevicesCount + cov.UnknownDevicesCount + cov.NotApplicableDevicesCount
-		if total != ep.Scope.ObservedDevicesCount {
-			problems = append(problems, fmt.Sprintf("%s: coverage covers %d devices, scope has %d", m.path, total, ep.Scope.ObservedDevicesCount))
+		if total != devices {
+			problems = append(problems, fmt.Sprintf("%s: coverage covers %d devices, scope has %d", m.path, total, devices))
 		}
 		var want *float64
 		if evaluated := cov.PassingDevicesCount + cov.FailingDevicesCount; evaluated > 0 {
-			v := math.Round(float64(cov.PassingDevicesCount)*10000/float64(evaluated)) / 100
+			v := math.Floor(float64(cov.PassingDevicesCount) * 100 / float64(evaluated))
 			want = &v
 		}
 		switch {
-		case want == nil && value != nil:
+		case want == nil && value.Value != nil:
 			problems = append(problems, m.path+": percentage emitted with nothing evaluated")
-		case want != nil && (value == nil || *value != *want):
+		case want != nil && (value.Value == nil || *value.Value != *want):
 			problems = append(problems, fmt.Sprintf("%s: percentage does not match coverage", m.path))
 		}
 	}
 
-	if !level.AtLeast(componentsdk.LevelAudit) {
+	if !audit {
 		data, _ := json.Marshal(ep)
-		if len(ep.Devices) > 0 || ep.Inventories != nil || strings.Contains(string(data), `"device_id"`) {
-			problems = append(problems, "trust output must not carry device identity")
+		if len(ep.Devices) > 0 || len(ep.MetricCoverage) > 0 || strings.Contains(string(data), `"device_id"`) {
+			problems = append(problems, "trust output must not carry device identity or coverage")
 		}
 	}
 	for _, d := range ep.Devices {

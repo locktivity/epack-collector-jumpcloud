@@ -15,7 +15,6 @@ import (
 
 var testNow = time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 
-func boolPtr(v bool) *bool      { return &v }
 func intPtr(v int) *int         { return &v }
 func strPtr(v string) *string   { return &v }
 func f64Ptr(v float64) *float64 { return &v }
@@ -65,13 +64,13 @@ func TestEndpoint_DenominatorExample(t *testing.T) {
 
 	ep := buildEndpointPosture(inputs(componentsdk.LevelTrust, systems...))
 
-	if ep.Hardening == nil || ep.Hardening.DiskEncryptionPct == nil {
+	if ep.Hardening == nil || ep.Hardening.DiskEncryptionPct.Value == nil {
 		t.Fatal("disk_encryption_pct should be emitted")
 	}
-	if got := *ep.Hardening.DiskEncryptionPct; got != 97.14 {
-		t.Errorf("disk_encryption_pct = %v, want 97.14", got)
+	if got := *ep.Hardening.DiskEncryptionPct.Value; got != 97 {
+		t.Errorf("disk_encryption_pct = %v, want 97, rounded down", got)
 	}
-	cov := ep.MetricCoverage["hardening.disk_encryption_pct"]
+	cov := ep.coverage["hardening.disk_encryption_pct"]
 	want := MetricCoverage{PassingDevicesCount: 170, FailingDevicesCount: 5, UnknownDevicesCount: 5}
 	if cov != want {
 		t.Errorf("coverage = %+v, want %+v", cov, want)
@@ -95,10 +94,10 @@ func TestEndpoint_TinyEvaluatedSubsetKeepsUnknownsVisible(t *testing.T) {
 
 	ep := buildEndpointPosture(inputs(componentsdk.LevelTrust, systems...))
 
-	if got := *ep.Hardening.DiskEncryptionPct; got != 100 {
+	if got := *ep.Hardening.DiskEncryptionPct.Value; got != 100 {
 		t.Errorf("disk_encryption_pct = %v, want 100", got)
 	}
-	cov := ep.MetricCoverage["hardening.disk_encryption_pct"]
+	cov := ep.coverage["hardening.disk_encryption_pct"]
 	if cov.PassingDevicesCount != 1 || cov.UnknownDevicesCount != 99 {
 		t.Errorf("coverage = %+v, want 1 passing and 99 unknown", cov)
 	}
@@ -107,33 +106,122 @@ func TestEndpoint_TinyEvaluatedSubsetKeepsUnknownsVisible(t *testing.T) {
 func TestEndpoint_ZeroEvaluatedOmitsPercentage(t *testing.T) {
 	ep := buildEndpointPosture(inputs(componentsdk.LevelTrust, macWithFDE("a", nil, testNow.Add(-time.Hour))))
 
-	if ep.Hardening != nil && ep.Hardening.DiskEncryptionPct != nil {
+	if ep.Hardening != nil && ep.Hardening.DiskEncryptionPct.Read {
 		t.Error("disk_encryption_pct must be omitted when nothing was evaluated")
 	}
-	if _, ok := ep.MetricCoverage["hardening.disk_encryption_pct"]; !ok {
+	// System Insights' disk_encryption table covers the Mac, so the gap is
+	// not_read.
+	if code := ep.noSource["hardening.disk_encryption_pct"]; code != componentsdk.CodeNotRead {
+		t.Errorf("a Mac with no disk encryption reading gives %q, want not_read", code)
+	}
+	if _, ok := ep.coverage["hardening.disk_encryption_pct"]; !ok {
 		t.Error("coverage entry should still report the unknown device")
 	}
-	if !availabilityHas(ep, "hardening.disk_encryption_pct", reasonUnsupported) {
+	if !availabilityHas(ep, "hardening.disk_encryption_pct", reasonNotRead) {
 		t.Error("an omitted percentage needs an availability explanation")
 	}
 }
 
-func TestEndpoint_ZeroDevices(t *testing.T) {
-	ep := buildEndpointPosture(inputs(componentsdk.LevelTrust))
+// A Windows fleet with no BitLocker rows and no fde.active has no other
+// JumpCloud source for disk encryption, so the gap is unsupported. No
+// device has a firewall source either.
+func TestEndpoint_NoSourceOnWindowsIsUnsupported(t *testing.T) {
+	ep := buildEndpointPosture(inputs(componentsdk.LevelTrust, windowsSystem("w", testNow.Add(-time.Hour))))
 
-	if !ep.Scope.DiscoveryComplete {
+	for _, path := range []string{"hardening.disk_encryption_pct", "hardening.firewall_enabled_pct"} {
+		if code := ep.noSource[path]; code != componentsdk.CodeUnsupported {
+			t.Errorf("%s gives %q, want unsupported", path, code)
+		}
+		if !availabilityHas(ep, path, reasonUnsupported) {
+			t.Errorf("%s needs an unsupported availability entry", path)
+		}
+	}
+}
+
+// A Windows device whose fresh System Insights rows are neither a pass nor
+// a fail has a source for the control. Its availability reason is
+// source_error, and it has no unsupported gap.
+func TestCollect_UnjudgedReadingsAreSourceError(t *testing.T) {
+	recent := insightTime(time.Now().Add(-time.Hour))
+	for _, tc := range []struct {
+		name, path, pointer string
+		rows                func(*mockClient)
+	}{
+		{"BitLocker volumes disagree", "hardening.disk_encryption_pct", "/hardening/disk_encryption_pct", func(m *mockClient) {
+			m.bitlocker = []jumpcloud.InsightBitLocker{
+				{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("C:"), ProtectionStatus: intPtr(1), ConversionStatus: intPtr(1)},
+				{SystemID: "w", CollectionTime: recent, DriveLetter: strPtr("D:"), ProtectionStatus: intPtr(0), ConversionStatus: intPtr(0)},
+			}
+		}},
+		{"firewall snoozed", "hardening.firewall_enabled_pct", "/hardening/firewall_enabled_pct", func(m *mockClient) {
+			m.wsc = []jumpcloud.InsightWindowsSecurityCenter{{SystemID: "w", CollectionTime: recent, Firewall: strPtr("Snoozed")}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &mockClient{
+				users:   []jumpcloud.SystemUser{{ID: "u1", Username: "alice", State: "ACTIVATED"}},
+				org:     &jumpcloud.Organization{ID: "org-1"},
+				systems: []jumpcloud.System{windowsSystem("w", time.Now().Add(-30*time.Minute))},
+			}
+			tc.rows(m)
+			rec := &componentsdk.Recorder{}
+			posture, err := New(Config{Recorder: rec}, m).Collect(context.Background(), componentsdk.LevelAudit)
+			if err != nil {
+				t.Fatalf("Collect: %v", err)
+			}
+			ep := posture.ToEndpointPosture()
+			for _, a := range ep.Availability {
+				if a.Path == tc.path && (a.Reason != reasonSourceError || a.Message != noVerdict) {
+					t.Errorf("availability for %s = %+v, want source_error with %q", tc.path, a, noVerdict)
+				}
+			}
+			if !availabilityHas(ep, tc.path, reasonSourceError) {
+				t.Errorf("%s has no source_error availability entry: %+v", tc.path, ep.Availability)
+			}
+			if g, ok := gapAt(rec, endpointPosturePath, tc.pointer); ok && g.Code == componentsdk.CodeUnsupported {
+				t.Errorf("gap at %s = %+v, want no unsupported gap", tc.pointer, g)
+			}
+		})
+	}
+}
+
+func TestEndpoint_ZeroDevices(t *testing.T) {
+	ep := buildEndpointPosture(inputs(componentsdk.LevelAudit))
+
+	if !ep.discovered() {
 		t.Error("an empty, fully fetched fleet is complete")
 	}
-	if ep.Fleet == nil || ep.Fleet.DevicesCount == nil || *ep.Fleet.DevicesCount != 0 {
-		t.Fatal("devices_count should be a known zero")
-	}
-	if ep.Hardening != nil || ep.Protection != nil {
-		t.Error("no percentages for an empty fleet")
+	if ep.Fleet == nil || ep.Fleet.DeviceCount == nil || *ep.Fleet.DeviceCount != 0 || *ep.Fleet.DevicesPresent {
+		t.Fatal("device_count should be a known zero")
 	}
 
 	data, _ := json.Marshal(ep)
-	if !strings.Contains(string(data), `"devices_count":0`) {
-		t.Errorf("known zero must survive serialization: %s", data)
+	for _, want := range []string{`"device_count":0`, `"devices_present":false`, `"disk_encryption_pct":null`, `"mdm_enrolled_pct":null`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("an empty fleet should write %s: %s", want, data)
+		}
+	}
+}
+
+// discovery_complete is false when the row limit stopped the systems list,
+// and null when the list ends early or repeats a device.
+func TestDiscoveryComplete(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		rows, distinct, total int
+		want                  *bool
+	}{
+		{"every system listed", 3, 3, 3, boolPtr(true)},
+		{"stopped at the row limit", jumpcloud.MaxResults, jumpcloud.MaxResults, jumpcloud.MaxResults + 1, boolPtr(false)},
+		{"list ends early", 5, 5, 7, nil},
+		{"a device listed twice", 3, 2, 3, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := discoveryComplete(systemsShortfall(tc.rows, tc.distinct, tc.total))
+			if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+				t.Errorf("discoveryComplete = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -143,11 +231,11 @@ func TestEndpoint_PartialDiscoveryOmitsFleetWideValues(t *testing.T) {
 
 	ep := buildEndpointPosture(in)
 
-	if ep.Scope.DiscoveryComplete {
-		t.Error("discovery_complete should be false")
+	if ep.Scope.DiscoveryComplete != nil {
+		t.Errorf("discovery_complete = %v, want null for a list that ends early", *ep.Scope.DiscoveryComplete)
 	}
-	if ep.Scope.ObservedDevicesCount != 1 {
-		t.Errorf("observed_devices_count = %d, want 1", ep.Scope.ObservedDevicesCount)
+	if *ep.Scope.ObservedDeviceCount != 1 {
+		t.Errorf("observed_device_count = %d, want 1", *ep.Scope.ObservedDeviceCount)
 	}
 	if ep.Fleet != nil || ep.Hardening != nil || ep.Protection != nil || len(ep.MetricCoverage) != 0 {
 		t.Error("fleet totals, percentages, and coverage must be omitted for a partial fleet")
@@ -157,20 +245,17 @@ func TestEndpoint_PartialDiscoveryOmitsFleetWideValues(t *testing.T) {
 			t.Errorf("missing partial availability for %s", path)
 		}
 	}
-	if meta := ep.Inventories[inventoryDevices]; meta.CollectionComplete {
-		t.Error("device inventory must be marked incomplete")
-	}
 }
 
 func TestEndpoint_DuplicateSystemRowsCountOnce(t *testing.T) {
 	sys := macWithFDE("a", boolPtr(true), testNow.Add(-time.Hour))
-	in := inputs(componentsdk.LevelTrust, sys, sys)
+	in := inputs(componentsdk.LevelAudit, sys, sys)
 	in.serverTotal = 1
 
 	ep := buildEndpointPosture(in)
 
-	if *ep.Fleet.DevicesCount != 1 || ep.MetricCoverage["hardening.disk_encryption_pct"].PassingDevicesCount != 1 {
-		t.Errorf("duplicate rows should be one device: fleet=%d", *ep.Fleet.DevicesCount)
+	if *ep.Fleet.DeviceCount != 1 || ep.coverage["hardening.disk_encryption_pct"].PassingDevicesCount != 1 {
+		t.Errorf("duplicate rows should be one device: fleet=%d", *ep.Fleet.DeviceCount)
 	}
 }
 
@@ -183,10 +268,10 @@ func TestEndpoint_FDEFalseIsFailureMissingIsUnknown(t *testing.T) {
 	))
 
 	want := MetricCoverage{FailingDevicesCount: 1, UnknownDevicesCount: 2}
-	if got := ep.MetricCoverage["hardening.disk_encryption_pct"]; got != want {
+	if got := ep.coverage["hardening.disk_encryption_pct"]; got != want {
 		t.Errorf("coverage = %+v, want %+v", got, want)
 	}
-	if *ep.Hardening.DiskEncryptionPct != 0 {
+	if *ep.Hardening.DiskEncryptionPct.Value != 0 {
 		t.Error("a known 0% must be emitted, not omitted")
 	}
 }
@@ -364,8 +449,8 @@ func TestEndpoint_CappedTelemetryMarksMissingRowsPartial(t *testing.T) {
 	in.bitlocker = newInsightSource[jumpcloud.InsightBitLocker](nil, true, func(r jumpcloud.InsightBitLocker) string { return r.SystemID })
 
 	got := evalDiskEncryption(&in.systems[0], "windows", in)
-	if got.state != stateUnknown || got.reason != reasonPartial {
-		t.Errorf("got %+v, want unknown/partial", got)
+	if got.state != stateUnknown || got.reason != reasonPartial || componentsdk.Classify(got.err) != componentsdk.CodeTooLarge {
+		t.Errorf("got %+v, want unknown/partial with a too_large error", got)
 	}
 }
 
@@ -385,7 +470,7 @@ func TestEndpoint_CappedProductTableIsPartialNotZero(t *testing.T) {
 		if !availabilityHas(ep, path, reasonPartial) {
 			t.Errorf("missing partial availability for %s", path)
 		}
-		if cov := ep.MetricCoverage[path]; cov.UnknownDevicesCount != 1 {
+		if cov := ep.coverage[path]; cov.UnknownDevicesCount != 1 {
 			t.Errorf("%s coverage = %+v, want the device unknown", path, cov)
 		}
 	}
@@ -402,7 +487,7 @@ func TestEndpoint_DuplicateRecordsReconcileIndependentOfOrder(t *testing.T) {
 		in := inputs(componentsdk.LevelTrust, systems...)
 		in.serverTotal = 1
 		ep := buildEndpointPosture(in)
-		if got := ep.MetricCoverage["hardening.disk_encryption_pct"]; got.FailingDevicesCount != 1 || got.PassingDevicesCount != 0 {
+		if got := ep.coverage["hardening.disk_encryption_pct"]; got.FailingDevicesCount != 1 || got.PassingDevicesCount != 0 {
 			t.Errorf("%s: the newest record should decide, got %+v", name, got)
 		}
 	}
@@ -413,7 +498,7 @@ func TestEndpoint_DuplicateRecordsReconcileIndependentOfOrder(t *testing.T) {
 		in := inputs(componentsdk.LevelTrust, systems...)
 		in.serverTotal = 1
 		ep := buildEndpointPosture(in)
-		if got := ep.MetricCoverage["hardening.disk_encryption_pct"]; got.UnknownDevicesCount != 1 {
+		if got := ep.coverage["hardening.disk_encryption_pct"]; got.UnknownDevicesCount != 1 {
 			t.Errorf("%s: equally fresh conflicting records should be unknown, got %+v", name, got)
 		}
 		if !availabilityHas(ep, "hardening.disk_encryption_pct", reasonSourceError) {
@@ -432,7 +517,7 @@ func TestEndpoint_ConflictingOSRecordsCannotBypassBitLocker(t *testing.T) {
 
 	alone := inputs(componentsdk.LevelTrust, win)
 	alone.bitlocker = suspended
-	if got := buildEndpointPosture(alone).MetricCoverage["hardening.disk_encryption_pct"]; got.FailingDevicesCount != 1 {
+	if got := buildEndpointPosture(alone).coverage["hardening.disk_encryption_pct"]; got.FailingDevicesCount != 1 {
 		t.Fatalf("the Windows record alone should fail on suspended BitLocker, got %+v", got)
 	}
 
@@ -442,10 +527,10 @@ func TestEndpoint_ConflictingOSRecordsCannotBypassBitLocker(t *testing.T) {
 		in.bitlocker = suspended
 		ep := buildEndpointPosture(in)
 
-		if ep.Hardening != nil && ep.Hardening.DiskEncryptionPct != nil {
-			t.Errorf("%s: an OS conflict must not produce an encryption percentage, got %v", name, *ep.Hardening.DiskEncryptionPct)
+		if ep.Hardening != nil && ep.Hardening.DiskEncryptionPct.Value != nil {
+			t.Errorf("%s: an OS conflict must not produce an encryption percentage, got %v", name, *ep.Hardening.DiskEncryptionPct.Value)
 		}
-		if got := ep.MetricCoverage["hardening.disk_encryption_pct"]; got != (MetricCoverage{UnknownDevicesCount: 1}) {
+		if got := ep.coverage["hardening.disk_encryption_pct"]; got != (MetricCoverage{UnknownDevicesCount: 1}) {
 			t.Errorf("%s: coverage = %+v, want the device unknown", name, got)
 		}
 		for _, path := range []string{"hardening.disk_encryption_pct", "hardening.firewall_enabled_pct", "protection.antimalware_installed_pct"} {
@@ -505,17 +590,22 @@ func TestCollect_EndpointTrustHasNoDeviceIdentity(t *testing.T) {
 			t.Errorf("trust output must not contain %q: %s", leak, out)
 		}
 	}
-	if ep.OrganizationID != "org-1" {
-		t.Errorf("organization_id = %q, want org-1", ep.OrganizationID)
+	if ep.OrganizationID != "" || ep.Scope.ObservedDeviceCount != nil || ep.MetricCoverage != nil {
+		t.Errorf("organization_id, observed_device_count, and metric_coverage are audit-level: %s", out)
 	}
-	if *ep.Fleet.MDMEnrolledDevicesCount != 1 || *ep.Fleet.ManagedDevicesCount != 2 {
+	if ep.Fleet.DeviceCount != nil || ep.Fleet.MDMEnrolledDeviceCount != nil || ep.Fleet.ManagedDeviceCount != nil {
+		t.Errorf("fleet counts are audit-level: %+v", ep.Fleet)
+	}
+	if !*ep.Fleet.DevicesPresent || *ep.Fleet.MDMEnrolledPct.Value != 50 {
 		t.Errorf("fleet = %+v", ep.Fleet)
 	}
-	if ep.Fleet.DevicesByOS["macos"] != 1 || ep.Fleet.DevicesByOS["windows"] != 1 {
-		t.Errorf("devices_by_os = %v", ep.Fleet.DevicesByOS)
-	}
-	if *ep.Hardening.DiskEncryptionPct != 100 || *ep.Hardening.FirewallEnabledPct != 100 {
+	if *ep.Hardening.DiskEncryptionPct.Value != 100 || *ep.Hardening.FirewallEnabledPct.Value != 100 {
 		t.Errorf("hardening = %+v", ep.Hardening)
+	}
+
+	_, ep = collectEndpoint(t, endpointMock(), componentsdk.LevelAudit)
+	if ep.OrganizationID != "org-1" || *ep.Fleet.MDMEnrolledDeviceCount != 1 || *ep.Fleet.ManagedDeviceCount != 2 {
+		t.Errorf("audit endpoint = %+v, fleet = %+v", ep, ep.Fleet)
 	}
 }
 
@@ -544,9 +634,6 @@ func TestCollect_EndpointLevelGating(t *testing.T) {
 	if win := ep.Devices[1].LocalAdminAccounts; win != nil {
 		t.Errorf("an account without an admin flag leaves the device unclassified; windows admins = %+v", *win)
 	}
-	if ep.Inventories[inventoryLocalAdmins].CollectionComplete {
-		t.Error("local admin inventory must be incomplete while a device is unclassified")
-	}
 	if !availabilityHas(ep, inventoryLocalAdmins, reasonPartial) {
 		t.Error("unclassified devices should be explained in availability")
 	}
@@ -558,8 +645,8 @@ func TestCollect_EndpointLevelGating(t *testing.T) {
 	if win := ep.Devices[1].LocalAdminAccounts; win == nil || len(*win) != 0 {
 		t.Errorf("classified accounts with no admins should be an empty list, got %v", win)
 	}
-	if !ep.Inventories[inventoryLocalAdmins].CollectionComplete {
-		t.Error("every device classified should mark the local admin inventory complete")
+	if availabilityHas(ep, inventoryLocalAdmins, reasonPartial) {
+		t.Error("every device classified should leave no partial availability for local admins")
 	}
 }
 
@@ -577,18 +664,18 @@ func TestCollect_EndpointSurvivesEmptyAndPartialUsers(t *testing.T) {
 	m := endpointMock()
 	m.users = nil
 	posture, ep := collectEndpoint(t, m, componentsdk.LevelTrust)
-	if posture.ToIDPPosture() != nil {
-		t.Error("no users should suppress the IDP artifact")
+	if idp := posture.ToIDPPosture(); idp == nil || *idp.UserSecurity.UsersPresent {
+		t.Error("no users should write an IDP artifact with no users present")
 	}
-	if ep.Fleet == nil || *ep.Fleet.DevicesCount != 2 {
+	if ep.Fleet == nil || !*ep.Fleet.DevicesPresent {
 		t.Error("device evidence must not depend on user discovery")
 	}
 
 	m = endpointMock()
 	m.userTotal = 50
 	posture, ep = collectEndpoint(t, m, componentsdk.LevelTrust)
-	if posture.ToIDPPosture() != nil {
-		t.Error("partial users should suppress the IDP artifact")
+	if idp := posture.ToIDPPosture(); idp == nil || idp.UserSecurity != nil {
+		t.Error("partial users should leave user_security out of the IDP artifact")
 	}
 	if ep.Hardening == nil {
 		t.Error("partial users must not suppress device percentages")
@@ -619,11 +706,26 @@ func TestCollect_EndpointDeniedInsightsDegrade(t *testing.T) {
 	}
 }
 
-func TestCollect_EndpointUnauthorizedInsightsIsFatal(t *testing.T) {
+func TestCollect_EndpointUnauthorizedInsightsLeavesAGap(t *testing.T) {
 	m := endpointMock()
 	m.bitlockerErr = &jumpcloud.APIError{StatusCode: 401}
-	if _, err := New(Config{}, m).Collect(context.Background(), componentsdk.LevelTrust); err == nil {
-		t.Fatal("401 on telemetry should abort collection")
+	rec := &componentsdk.Recorder{}
+	posture, err := New(Config{Recorder: rec}, m).Collect(context.Background(), componentsdk.LevelAudit)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if posture.DeviceControls.DiskEncryption != nil {
+		t.Error("disk encryption should be left out while a Windows reading is unread")
+	}
+	if g, ok := gapAt(rec, detailedPath, "/device_controls/disk_encryption"); !ok || g.Code != componentsdk.CodeAuthFailed || g.Unmeasured != 1 {
+		t.Errorf("gap = %+v, want auth_failed with one device unmeasured", g)
+	}
+	ep := posture.ToEndpointPosture()
+	if _, ok := ep.Devices[1].Controls[controlDiskEncryption]; ok {
+		t.Error("the Windows device's unread reading should be left out of its row")
+	}
+	if _, ok := gapAt(rec, endpointPosturePath, "/devices/1/controls/disk_encryption"); !ok {
+		t.Error("the unread reading needs a gap")
 	}
 }
 
@@ -651,16 +753,15 @@ func TestEndpoint_TruncationKeepsAggregatesStable(t *testing.T) {
 	if len(ep.Devices) != MaxDevices {
 		t.Errorf("devices = %d, want %d", len(ep.Devices), MaxDevices)
 	}
-	if *ep.Fleet.DevicesCount != MaxDevices+5 {
-		t.Errorf("devices_count = %d, want full population", *ep.Fleet.DevicesCount)
+	if *ep.Fleet.DeviceCount != MaxDevices+5 {
+		t.Errorf("device_count = %d, want full population", *ep.Fleet.DeviceCount)
 	}
-	cov := ep.MetricCoverage["hardening.disk_encryption_pct"]
+	cov := ep.coverage["hardening.disk_encryption_pct"]
 	if cov.PassingDevicesCount+cov.FailingDevicesCount != MaxDevices+5 {
 		t.Errorf("coverage should count every device, got %+v", cov)
 	}
-	meta := ep.Inventories[inventoryDevices]
-	if !meta.OutputTruncated || meta.ReturnedRowsCount != MaxDevices || *meta.DroppedRowsCount != 5 || !meta.CollectionComplete {
-		t.Errorf("inventory meta = %+v", meta)
+	if ep.truncatedDevices != 5 || !ep.discovered() {
+		t.Errorf("truncated devices = %d, want 5 with discovery complete", ep.truncatedDevices)
 	}
 }
 
@@ -669,6 +770,36 @@ func TestEndpoint_UnmeasuredMetricsAreExplained(t *testing.T) {
 	for _, a := range unmeasuredAvailability {
 		if !availabilityHas(ep, a.Path, a.Reason) {
 			t.Errorf("missing availability %s/%s", a.Path, a.Reason)
+		}
+	}
+}
+
+// The availability reason of each endpoint value with no reading is the
+// code of its gap. Disk encryption has no reading here and the fleet has a
+// Mac, so its gap and its availability reason are not_read.
+func TestCollect_AvailabilityReasonMatchesGapCode(t *testing.T) {
+	m := endpointMock()
+	m.systems[0].FDE = nil
+	m.bitlocker = nil
+	rec := &componentsdk.Recorder{}
+	posture, err := New(Config{Recorder: rec}, m).Collect(context.Background(), componentsdk.LevelAudit)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	ep := posture.ToEndpointPosture()
+	for path, want := range map[string]componentsdk.Code{
+		"hardening.disk_encryption_pct":       componentsdk.CodeNotRead,
+		"hardening.screen_lock_compliant_pct": componentsdk.CodeNotRead,
+		"compliance.compliant_pct":            componentsdk.CodeNotRead,
+		"patching.os_supported_pct":           componentsdk.CodeUnsupported,
+		"protection.edr_installed_pct":        componentsdk.CodeUnsupported,
+	} {
+		pointer := "/" + strings.ReplaceAll(path, ".", "/")
+		if g, ok := gapAt(rec, endpointPosturePath, pointer); !ok || g.Code != want {
+			t.Errorf("gap at %s = %+v, want %s", pointer, g, want)
+		}
+		if !availabilityHas(ep, path, string(want)) {
+			t.Errorf("%s has no %s availability entry: %+v", path, want, ep.Availability)
 		}
 	}
 }
@@ -697,7 +828,7 @@ func TestCollect_DetailedArtifactCarriesDeviceControls(t *testing.T) {
 	posture, ep := collectEndpoint(t, endpointMock(), componentsdk.LevelTrust)
 
 	dc := posture.DeviceControls
-	if dc == nil || !dc.DiscoveryComplete || dc.MaxObservationAgeSeconds != ep.Scope.MaxObservationAgeSeconds {
+	if dc == nil || dc.DiscoveryComplete == nil || !*dc.DiscoveryComplete || dc.MaxObservationAgeSeconds != ep.Scope.MaxObservationAgeSeconds {
 		t.Fatalf("device_controls = %+v", dc)
 	}
 	for path, got := range map[string]*ControlSummary{
@@ -706,7 +837,7 @@ func TestCollect_DetailedArtifactCarriesDeviceControls(t *testing.T) {
 		"protection.antimalware_installed_pct": dc.AntimalwareInstalled,
 		"protection.antimalware_healthy_pct":   dc.AntimalwareHealthy,
 	} {
-		cov := ep.MetricCoverage[path]
+		cov := ep.coverage[path]
 		if got == nil {
 			t.Fatalf("%s missing from device_controls", path)
 		}
@@ -715,8 +846,8 @@ func TestCollect_DetailedArtifactCarriesDeviceControls(t *testing.T) {
 			t.Errorf("%s counts %+v differ from endpoint coverage %+v", path, got, cov)
 		}
 	}
-	if *dc.DiskEncryption.PassingPct != *ep.Hardening.DiskEncryptionPct {
-		t.Errorf("disk encryption pct %v differs from endpoint %v", *dc.DiskEncryption.PassingPct, *ep.Hardening.DiskEncryptionPct)
+	if *dc.DiskEncryption.PassingPct != *ep.Hardening.DiskEncryptionPct.Value {
+		t.Errorf("disk encryption pct %v differs from endpoint %v", *dc.DiskEncryption.PassingPct, *ep.Hardening.DiskEncryptionPct.Value)
 	}
 	if dc.AntimalwareInstalled.UnknownDevicesCount != 1 {
 		t.Errorf("the macOS device has no antimalware source and must count as unknown: %+v", dc.AntimalwareInstalled)
@@ -731,11 +862,23 @@ func TestCollect_DetailedArtifactCarriesDeviceControls(t *testing.T) {
 func TestCollect_DeviceControlsOmittedWhenDiscoveryIncomplete(t *testing.T) {
 	m := endpointMock()
 	m.sysTotal = 9
-	posture, _ := collectEndpoint(t, m, componentsdk.LevelTrust)
+	rec := &componentsdk.Recorder{}
+	posture, err := New(Config{Recorder: rec}, m).Collect(context.Background(), componentsdk.LevelTrust)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
 
 	dc := posture.DeviceControls
-	if dc == nil || dc.DiscoveryComplete {
-		t.Fatalf("device_controls should report incomplete discovery: %+v", dc)
+	if dc == nil || dc.DiscoveryComplete != nil {
+		t.Fatalf("device_controls should report unknown discovery: %+v", dc)
+	}
+	for _, at := range []struct{ path, pointer string }{
+		{detailedPath, "/device_controls/discovery_complete"},
+		{endpointPosturePath, "/scope/discovery_complete"},
+	} {
+		if g, ok := gapAt(rec, at.path, at.pointer); !ok || g.Code != componentsdk.CodeInvalidResponse {
+			t.Errorf("gap at %s %s = %+v, want invalid_response", at.path, at.pointer, g)
+		}
 	}
 	if dc.DiskEncryption != nil || dc.Firewall != nil || dc.AntimalwareInstalled != nil || dc.AntimalwareHealthy != nil {
 		t.Errorf("no fleet figures for a partial fleet: %+v", dc)
