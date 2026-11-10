@@ -313,24 +313,83 @@ func TestCollect_UnauthorizedSurfaceLeavesAGap(t *testing.T) {
 	}
 }
 
+// From the audit level, a refused organization list leaves org_id and
+// org_name out with gaps, and the users' organization names the
+// organization. Below it neither is written, and the users' email domain
+// names the organization.
 func TestCollect_OrganizationRefusedLeavesAGap(t *testing.T) {
-	mock := &mockClient{
-		users:  []jumpcloud.SystemUser{{ID: "u1", State: "ACTIVATED", Organization: "org-1"}},
-		orgErr: &jumpcloud.APIError{StatusCode: 403},
+	for _, tc := range []struct {
+		level  componentsdk.Level
+		gap    bool
+		domain string
+	}{
+		{componentsdk.LevelTrust, false, "acme.example"},
+		{componentsdk.LevelAudit, true, "org-1"},
+	} {
+		t.Run(string(tc.level), func(t *testing.T) {
+			mock := &mockClient{
+				users:  []jumpcloud.SystemUser{{ID: "u1", Email: "pat@acme.example", State: "ACTIVATED", Organization: "org-1"}},
+				orgErr: &jumpcloud.APIError{StatusCode: 403},
+			}
+			rec := &componentsdk.Recorder{}
+			posture, err := New(Config{Recorder: rec}, mock).Collect(context.Background(), tc.level)
+			if err != nil {
+				t.Fatalf("Collect: %v", err)
+			}
+			if posture.OrgID != "" || posture.OrgName != "" {
+				t.Errorf("org_id = %q, org_name = %q; want both left out", posture.OrgID, posture.OrgName)
+			}
+			for _, pointer := range []string{"/org_id", "/org_name"} {
+				if g, ok := gapAt(rec, detailedPath, pointer); ok != tc.gap || ok && g.Code != componentsdk.CodePermissionDenied {
+					t.Errorf("gap at %s = %+v, %v; want permission_denied only from the audit level", pointer, g, ok)
+				}
+			}
+			if idp := posture.ToIDPPosture(); idp == nil || idp.OrgDomain != tc.domain {
+				t.Errorf("idp-posture = %+v, want org_domain %q", idp, tc.domain)
+			}
+		})
 	}
-	rec := &componentsdk.Recorder{}
-	posture, err := New(Config{Recorder: rec}, mock).Collect(context.Background(), componentsdk.LevelTrust)
-	if err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
-	if posture.OrgID != "" {
-		t.Errorf("org_id = %q, want it left out", posture.OrgID)
-	}
-	if g, ok := gapAt(rec, detailedPath, "/org_id"); !ok || g.Code != componentsdk.CodePermissionDenied {
-		t.Errorf("gap at /org_id = %+v, want permission_denied", g)
-	}
-	if idp := posture.ToIDPPosture(); idp == nil || idp.OrgDomain != "org-1" {
-		t.Errorf("idp-posture = %+v, want org_domain from the users' organization", idp)
+}
+
+// From the audit level, org_name is the organization's display name. An
+// organization with none leaves it out with no gap, and a list with no
+// organization leaves it out with an invalid_response gap. Below the audit
+// level it is never written and has no gap.
+func TestCollect_OrganizationName(t *testing.T) {
+	for _, level := range []componentsdk.Level{componentsdk.LevelTrust, componentsdk.LevelAudit} {
+		audit := level.AtLeast(componentsdk.LevelAudit)
+		for _, tc := range []struct {
+			name string
+			org  *jumpcloud.Organization
+			want string
+			gap  bool
+		}{
+			{"display name", &jumpcloud.Organization{ID: "org-1", DisplayName: "Acme"}, "Acme", false},
+			{"no display name", &jumpcloud.Organization{ID: "org-1"}, "", false},
+			{"no organization listed", nil, "", true},
+		} {
+			t.Run(string(level)+"/"+tc.name, func(t *testing.T) {
+				mock := &mockClient{
+					users: []jumpcloud.SystemUser{{ID: "u1", Email: "pat@acme.example", State: "ACTIVATED", Organization: "org-1"}},
+					org:   tc.org,
+				}
+				rec := &componentsdk.Recorder{}
+				posture, err := New(Config{Recorder: rec}, mock).Collect(context.Background(), level)
+				if err != nil {
+					t.Fatalf("Collect: %v", err)
+				}
+				want, gap := "", false
+				if audit {
+					want, gap = tc.want, tc.gap
+				}
+				if posture.OrgName != want {
+					t.Errorf("org_name = %q, want %q", posture.OrgName, want)
+				}
+				if g, ok := gapAt(rec, detailedPath, "/org_name"); ok != gap || ok && g.Code != componentsdk.CodeInvalidResponse {
+					t.Errorf("gap at /org_name = %+v, %v; want invalid_response only at audit when no organization is listed", g, ok)
+				}
+			})
+		}
 	}
 }
 
@@ -767,5 +826,22 @@ func TestCollect_UnreadValueCodes(t *testing.T) {
 	}
 	if g, ok := gapAt(rec, endpointPosturePath, "/patching/os_supported_pct"); !ok || g.Code != componentsdk.CodeUnsupported {
 		t.Errorf("os_supported_pct gap = %+v, want unsupported", g)
+	}
+}
+
+func TestEmailDomainTakesTheMostCommonDomain(t *testing.T) {
+	cases := []struct {
+		emails []string
+		want   string
+	}{
+		{[]string{"a@Acme.example", "b@acme.example", "c@gmail.example"}, "acme.example"},
+		{[]string{"a@b.example", "c@a.example"}, "a.example"},
+		{[]string{"", "no-at-sign", "trailing@"}, ""},
+		{nil, ""},
+	}
+	for _, tc := range cases {
+		if got := emailDomain(tc.emails); got != tc.want {
+			t.Errorf("emailDomain(%q) = %q, want %q", tc.emails, got, tc.want)
+		}
 	}
 }

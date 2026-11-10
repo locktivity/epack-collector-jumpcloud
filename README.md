@@ -75,6 +75,10 @@ Set the collection level with the `level` config key (default `trust`). This con
 | Endpoint posture: fleet counts and coverage | | Yes | Yes |
 | Endpoint posture: per-device controls, primary user, last seen | | Yes | Yes |
 | Endpoint posture: local administrator accounts per device | | | Yes |
+| Organization name (`org_name`, the organization's display name) | | Yes | Yes |
+| Organization ID (`org_id`, and the endpoint artifact's `organization_id`) | | Yes | Yes |
+
+A trust run writes no organization, user, or device ID. The identity artifact's `org_domain` is then the domain most users' email addresses are at, or the administrators' when no user has one. From the audit level it is the organization ID.
 
 ### What it does not measure
 
@@ -159,7 +163,7 @@ When `org_id` is set, the collector validates it against the organization list. 
 
 Set `JUMPCLOUD_API_KEY` to a JumpCloud API key. Either kind works; both are sent in the `x-api-key` header.
 
-- **Service account (recommended):** in the Admin Portal, go to Settings > Service Accounts > + New, choose the Read Only role, and select API keys as the key type. The key is not tied to any one administrator. Service accounts cannot read `/api/organizations`, so the detailed artifact omits `org_id`, with a gap. The identity artifact's `org_domain` then comes from the organization the users belong to. Service accounts are not available to MSP organizations.
+- **Service account (recommended):** in the Admin Portal, go to Settings > Service Accounts > + New, choose the Read Only role, and select API keys as the key type. The key is not tied to any one administrator. Service accounts cannot read `/api/organizations`, so from the audit level the detailed artifact omits `org_id` and `org_name`, each with a gap, and the identity artifact's `org_domain` comes from the organization the users belong to. Service accounts are not available to MSP organizations.
 - **Personal API key:** click your account name in the bottom-left of the Admin Portal and choose My API Key. API access must first be enabled by an Administrator with Billing. Generating a new key revokes the previous one, and the key carries that administrator's full permissions.
 
 ### Required permissions

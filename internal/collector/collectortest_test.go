@@ -1,8 +1,12 @@
 package collector
 
 import (
+	"encoding/json"
 	"net/http"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/locktivity/epack-collector-jumpcloud/internal/jumpcloud"
 	"github.com/locktivity/epack/componentsdk"
@@ -53,6 +57,7 @@ func kitClean() collectortest.Scenario {
 				"/device_controls/disk_encryption/passing_pct":  66.67,
 				"/device_controls/firewall/passing_pct":         100,
 				"/audit_log/count_by_type/user_update":          2,
+				"/org_name":                                     "Example Org",
 			},
 			idpPosturePath: {
 				"/org_domain":                                    kitOrgID,
@@ -136,7 +141,7 @@ func TestCollectorKit(t *testing.T) {
 				Name:      "organization list refused",
 				Responses: append([]collectortest.Response{kitRefused(kitConsole + "/api/organizations")}, clean.responses()...),
 				Expect: map[string]map[string]any{
-					detailedPath:        {"/org_id": collectortest.Absent},
+					detailedPath:        {"/org_id": collectortest.Absent, "/org_name": collectortest.Absent},
 					idpPosturePath:      {"/org_domain": kitOrgID},
 					endpointPosturePath: {"/organization_id": collectortest.Absent},
 				},
@@ -236,6 +241,172 @@ func TestRunRejectsInvalidConfiguration(t *testing.T) {
 			})
 			if res.ExitCode != 2 || res.Failure == nil || res.Failure.Code != componentsdk.CodeConfigInvalid {
 				t.Errorf("exit %d, failure %+v; want exit 2 with config_invalid", res.ExitCode, res.Failure)
+			}
+		})
+	}
+}
+
+// kitRun runs the collector against the responses with the config, and
+// fails the test when the run fails.
+func kitRun(t *testing.T, config map[string]any, responses []collectortest.Response) componentsdk.InProcessResult {
+	t.Helper()
+	replay, err := collectortest.NewReplay(collectortest.Scenario{Name: t.Name(), Responses: responses})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := componentsdk.RunInProcess(Spec("test", "collectortest"), Run, componentsdk.InProcessOptions{
+		Config:    config,
+		Secrets:   kitSecrets(),
+		Transport: replay,
+		Clock:     func() time.Time { return kitNow },
+	})
+	if res.ExitCode != 0 || res.Result == nil {
+		t.Fatalf("run failed with exit %d: %s", res.ExitCode, res.Stderr)
+	}
+	return res
+}
+
+// kitField returns the top-level key of the artifact the run wrote at path.
+func kitField(t *testing.T, res componentsdk.InProcessResult, path, key string) any {
+	t.Helper()
+	for _, artifact := range res.Artifacts {
+		if artifact.Path != path {
+			continue
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(artifact.Data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		return doc[key]
+	}
+	t.Fatalf("the run wrote no %s", path)
+	return nil
+}
+
+// A trust run writes no organization, user, or device ID: not in the
+// artifacts, their diagnostics, or the collector result. The identity
+// artifact names the organization by the users' email domain. An audit run
+// writes the organization ID as before.
+func TestTrustRunWritesNoAccountIDs(t *testing.T) {
+	clean := kitCleanTenant().responses()
+	refused := append([]collectortest.Response{kitRefused(kitConsole + "/api/organizations")}, clean...)
+	ids := []string{kitOrgID, `"u1"`, `"u2"`, `"a1"`, `"a2"`, "s-mac", "s-win", "s-lin"}
+	for name, responses := range map[string][]collectortest.Response{"clean": clean, "organization list refused": refused} {
+		trust := kitRun(t, map[string]any{"level": "trust"}, responses)
+		for _, artifact := range trust.Artifacts {
+			for _, id := range ids {
+				if strings.Contains(string(artifact.Data), id) {
+					t.Errorf("%s: %s names %s at trust: %s", name, artifact.Path, id, artifact.Data)
+				}
+			}
+		}
+		if got := kitField(t, trust, idpPosturePath, "org_domain"); got != "example.com" {
+			t.Errorf("%s: org_domain = %v at trust, want the users' email domain", name, got)
+		}
+		for _, check := range trust.Result.Checks {
+			t.Errorf("%s: trust run has check finding %+v", name, check)
+		}
+	}
+
+	audit := kitRun(t, map[string]any{"level": "audit"}, clean)
+	for _, at := range []struct{ path, key string }{
+		{detailedPath, "org_id"},
+		{idpPosturePath, "org_domain"},
+		{endpointPosturePath, "organization_id"},
+	} {
+		if got := kitField(t, audit, at.path, at.key); got != kitOrgID {
+			t.Errorf("%s %s = %v at audit, want %s", at.path, at.key, got, kitOrgID)
+		}
+	}
+}
+
+// The run declares the organization as the whole detailed artifact, named
+// by its org_id and labeled by its org_name, the display name. Only the
+// audit level holds either. It is chosen by org_id when the config names
+// one, and found by the API key otherwise. From the audit level, a run that
+// could not read the organization leaves org_name out with a gap, so the
+// organization is incomplete and the run partial. A trust run writes
+// neither value nor gap, so the same run is collected.
+func TestRunDeclaresTheOrganization(t *testing.T) {
+	one, complete, incomplete := 1, true, false
+	declared := func(chosen componentsdk.TargetChoice, key string, count *int, done *bool) []componentsdk.ResultTarget {
+		return []componentsdk.ResultTarget{{
+			Kind: componentsdk.TargetOrganization, ChosenBy: chosen, ConfigKey: key,
+			At:   &componentsdk.Location{Path: detailedPath, Pointer: ""},
+			Name: []string{"/org_id"}, Label: "/org_name", Count: count, Complete: done,
+		}}
+	}
+	clean := kitCleanTenant().responses()
+	refused := append([]collectortest.Response{kitRefused(kitConsole + "/api/organizations")}, clean...)
+	cases := []struct {
+		name      string
+		config    map[string]any
+		responses []collectortest.Response
+		want      []componentsdk.ResultTarget
+		orgName   any
+		gap       bool
+		status    string
+	}{
+		{
+			name: "audit, found by the key", config: map[string]any{"level": "audit"}, responses: clean,
+			want: declared(componentsdk.ChosenByDiscovery, "", &one, &complete), orgName: "Example Org",
+			status: componentsdk.OutcomeCollected,
+		},
+		{
+			name: "audit, named by org_id", config: map[string]any{"level": "audit", "org_id": kitOrgID}, responses: clean,
+			want: declared(componentsdk.ChosenByConfig, "org_id", &one, &complete), orgName: "Example Org",
+			status: componentsdk.OutcomeCollected,
+		},
+		{
+			name: "trust, found by the key", config: map[string]any{"level": "trust"}, responses: clean,
+			want:   declared(componentsdk.ChosenByDiscovery, "", nil, &complete),
+			status: componentsdk.OutcomeCollected,
+		},
+		{
+			name: "trust, named by org_id", config: map[string]any{"level": "trust", "org_id": kitOrgID}, responses: clean,
+			want:   declared(componentsdk.ChosenByConfig, "org_id", nil, &complete),
+			status: componentsdk.OutcomeCollected,
+		},
+		{
+			name: "audit, organization list refused", config: map[string]any{"level": "audit"}, responses: refused,
+			want: declared(componentsdk.ChosenByDiscovery, "", &one, &incomplete), gap: true,
+			status: componentsdk.OutcomePartial,
+		},
+		{
+			name: "trust, organization list refused", config: map[string]any{"level": "trust"}, responses: refused,
+			want:   declared(componentsdk.ChosenByDiscovery, "", nil, &complete),
+			status: componentsdk.OutcomeCollected,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := kitRun(t, tc.config, tc.responses)
+			if !reflect.DeepEqual(res.Result.Targets, tc.want) {
+				got, _ := json.Marshal(res.Result.Targets)
+				want, _ := json.Marshal(tc.want)
+				t.Errorf("targets = %s, want %s", got, want)
+			}
+			for _, check := range res.Result.Checks {
+				t.Errorf("check finding %+v", check)
+			}
+			if got := kitField(t, res, detailedPath, "org_name"); got != tc.orgName {
+				t.Errorf("org_name = %v, want %v", got, tc.orgName)
+			}
+			var gaps []componentsdk.Gap
+			for _, g := range res.Result.Gaps {
+				if g.Path == detailedPath && g.Pointer == "/org_name" {
+					gaps = append(gaps, g)
+				}
+			}
+			wantGaps := 0
+			if tc.gap {
+				wantGaps = 1
+			}
+			if len(gaps) != wantGaps || tc.gap && gaps[0].Code != componentsdk.CodePermissionDenied {
+				t.Errorf("gaps at /org_name = %+v, want %d permission_denied", gaps, wantGaps)
+			}
+			if res.Result.Outcome.Status != tc.status {
+				t.Errorf("outcome = %+v, want %s", res.Result.Outcome, tc.status)
 			}
 		})
 	}
