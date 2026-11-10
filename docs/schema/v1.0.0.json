@@ -36,9 +36,17 @@
     },
     "org_id": {
       "type": "string",
-      "description": "The organization's ID from /api/organizations. Left out, with a gap, when the organization list could not be read, as for a service account",
+      "x-epack-level": "audit",
+      "description": "The organization's ID from /api/organizations, written from the audit level. Left out, with a gap, when the organization list could not be read, as for a service account",
       "x-epack-label": "Organization ID",
       "x-epack-summary": "The JumpCloud organization this collection covers."
+    },
+    "org_name": {
+      "type": "string",
+      "x-epack-level": "audit",
+      "description": "The organization's displayName from /api/organizations, written from the audit level. Left out, with a gap, when the organization list could not be read, as for a service account, or listed no organization. Left out without a gap when the organization has no display name",
+      "x-epack-label": "Organization name",
+      "x-epack-summary": "The display name of the JumpCloud organization this collection covers."
     },
     "users": {
       "type": "object",

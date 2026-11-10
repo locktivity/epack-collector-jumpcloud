@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/locktivity/epack-collector-jumpcloud/internal/jumpcloud"
@@ -46,26 +47,41 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	stepCtx, step = componentsdk.StartStep(ctx, "organization", "Fetching the organization")
 	org, orgErr := c.client.GetOrganization(stepCtx, c.cfg.OrgID)
 	step.End()
+	var orgID, orgName string
 	switch {
 	case orgErr != nil && isOrgValidationError(orgErr):
 		return nil, orgErr
 	case orgErr != nil:
 		diag.surfaceWarning("organization", safeDiagError(orgErr))
-		gaps.notCollected(orgErr, detailed("/org_id"))
+		if audit {
+			gaps.notCollected(orgErr, detailed("/org_id"), detailed("/org_name"))
+		}
 	case org == nil:
-		gaps.invalid(detailed("/org_id"), "JumpCloud listed no organization for the API key.")
+		if audit {
+			gaps.invalid(detailed("/org_id"), "JumpCloud listed no organization for the API key.")
+			gaps.invalid(detailed("/org_name"), "JumpCloud listed no organization for the API key.")
+		}
 	default:
-		posture.OrgID = org.ID
+		orgID, orgName = org.ID, org.DisplayName
 	}
 	gaps.rec.SignedInAs(componentsdk.Principal{
 		Provider:   "jumpcloud",
 		Kind:       "api_key",
-		TenantID:   posture.OrgID,
+		TenantID:   orgID,
 		AuthMethod: componentsdk.AuthAPIToken,
 	})
-	posture.orgDomain = posture.OrgID
-	if posture.orgDomain == "" {
-		posture.orgDomain = userOrganization(users)
+	chosen, key := componentsdk.ChosenByDiscovery, ""
+	if c.cfg.OrgID != "" {
+		chosen, key = componentsdk.ChosenByConfig, "org_id"
+	}
+	gaps.rec.Targets(componentsdk.TargetOrganization, detailed(""), "/org_id").ChosenBy(chosen, key).Label("/org_name")
+	if audit {
+		posture.OrgID = orgID
+		posture.OrgName = orgName
+		posture.orgDomain = orgID
+		if posture.orgDomain == "" {
+			posture.orgDomain = userOrganization(users)
+		}
 	}
 
 	stepCtx, step = componentsdk.StartStep(ctx, "applications", "Fetching applications")
@@ -86,6 +102,9 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 	stepCtx, step = componentsdk.StartStep(ctx, "administrators", "Fetching administrators")
 	admins, serverAdminTotal, adminErr := c.client.ListAdministrators(stepCtx)
 	step.End()
+	if !audit {
+		posture.orgDomain = orgEmailDomain(users, admins)
+	}
 	if adminErr != nil {
 		recordSurfaceError(diag, "administrators", adminErr)
 		gaps.notCollected(adminErr, detailed("/admins"))
@@ -194,11 +213,14 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 		recordEndpointGaps(gaps, ep, posture, endpointIn, sysShortfall)
 	}
 
-	if posture.orgDomain != "" {
+	switch {
+	case posture.orgDomain != "":
 		posture.recordIDPPostureGaps(gaps, userShortfall, serverUserTotal-len(users))
-	} else if orgErr != nil {
+	case !audit:
+		gaps.invalid(idp(""), "No user or administrator has an email address whose domain names the organization.")
+	case orgErr != nil:
 		gaps.notCollected(orgErr, idp(""))
-	} else {
+	default:
 		gaps.invalid(idp(""), "JumpCloud listed no organization for the API key, and no user names one.")
 	}
 
@@ -399,6 +421,42 @@ func hasMFA(u jumpcloud.SystemUser) bool {
 		return u.MFAEnrollment.HasAnyMFA()
 	}
 	return u.TOTPEnabled
+}
+
+// orgEmailDomain names the organization by the domain most of the users'
+// email addresses are at, or, in an organization with no user email, the
+// administrators'. It returns "" when no one has an email address.
+func orgEmailDomain(users []jumpcloud.SystemUser, admins []jumpcloud.Administrator) string {
+	emails := make([]string, 0, len(users))
+	for _, u := range users {
+		emails = append(emails, u.Email)
+	}
+	if domain := emailDomain(emails); domain != "" {
+		return domain
+	}
+	emails = emails[:0]
+	for _, a := range admins {
+		emails = append(emails, a.Email)
+	}
+	return emailDomain(emails)
+}
+
+// emailDomain returns the domain most of the email addresses are at, the
+// first by name on a tie, or "" when none has one.
+func emailDomain(emails []string) string {
+	counts := map[string]int{}
+	for _, email := range emails {
+		if at := strings.LastIndex(email, "@"); at >= 0 && at < len(email)-1 {
+			counts[strings.ToLower(email[at+1:])]++
+		}
+	}
+	best := ""
+	for domain, n := range counts {
+		if n > counts[best] || n == counts[best] && domain < best {
+			best = domain
+		}
+	}
+	return best
 }
 
 // userOrganization returns the organization the users name, or "" when none

@@ -8,6 +8,7 @@ type OrgPosture struct {
 	CollectedAt      string `json:"collected_at"`
 	CollectedAtLevel string `json:"collected_at_level"`
 	OrgID            string `json:"org_id,omitempty"`
+	OrgName          string `json:"org_name,omitempty"`
 
 	// Trust level: aggregate metrics (always present after successful user fetch)
 	Users          UserMetrics           `json:"users"`
@@ -30,9 +31,11 @@ type OrgPosture struct {
 
 	Diagnostics *Diagnostics `json:"diagnostics,omitempty"`
 
-	// orgDomain names the organization in the idp-posture artifact. It is
-	// org_id, or the organization the users name when org_id could not be
-	// read. It is not serialized.
+	// orgDomain names the organization in the idp-posture artifact. From the
+	// audit level it is org_id, or the organization the users name when
+	// org_id could not be read. Below it, where the organization's ID is left
+	// out, it is the domain most of the users' email addresses are at, or
+	// the administrators' when no user has one. It is not serialized.
 	orgDomain string
 	// people holds the user counts the normalized idp-posture artifact
 	// needs beyond the ones above. It is not serialized.

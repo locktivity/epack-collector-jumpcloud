@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.2.1
+
+- The collector is built on epack v0.10.5.
+- A trust run no longer writes the organization ID. `org_id` in `artifacts/jumpcloud.details.json` is written from the audit level. At trust, `org_domain` in `artifacts/jumpcloud.idp-posture.json` is the domain most users' email addresses are at, or the administrators' when no user has one. It used to be the organization ID. The audit and internal levels write what they did before.
+- The collector result's `targets` says what the run was pointed at: the organization, chosen by `org_id` or, without it, found by the API key. It points at `artifacts/jumpcloud.details.json` as a whole, named by `org_id` and labeled by the new `org_name`, the organization's display name. `org_name` is written from the audit level, as `org_id` is, and left out with a gap when the organization list could not be read, as for a service account. A trust run leaves both out, so its target does not name the organization. A gap anywhere in the artifact that makes the run partial marks the organization incomplete.
+
 ## v0.2.0
 
 - `scope.discovery_complete` in `artifacts/jumpcloud.endpoint-posture.json`, and `device_controls.discovery_complete` in `artifacts/jumpcloud.details.json`, are null when the systems list ends before the total JumpCloud reported or lists a device twice. Each then has an `invalid_response` gap. They used to be false. They are still false when the collector's row limit stops the list.

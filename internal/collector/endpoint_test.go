@@ -545,7 +545,7 @@ func endpointMock() *mockClient {
 	recent := insightTime(time.Now().Add(-time.Hour))
 	seen := rfc(time.Now().Add(-30 * time.Minute))
 	return &mockClient{
-		users: []jumpcloud.SystemUser{{ID: "u1", Username: "alice", State: "ACTIVATED"}},
+		users: []jumpcloud.SystemUser{{ID: "u1", Username: "alice", Email: "alice@example.com", State: "ACTIVATED"}},
 		org:   &jumpcloud.Organization{ID: "org-1"},
 		systems: []jumpcloud.System{
 			{ID: "s-mac", Hostname: "alice-mbp", OS: "Mac OS X", OSFamily: "darwin", Version: "15.1", LastContact: seen,
@@ -663,9 +663,10 @@ func TestCollect_EndpointOnlyFetchesTablesForPresentFamilies(t *testing.T) {
 func TestCollect_EndpointSurvivesEmptyAndPartialUsers(t *testing.T) {
 	m := endpointMock()
 	m.users = nil
+	m.admins = []jumpcloud.Administrator{{ID: "a1", Email: "owner@example.com", TOTPEnrolled: true}}
 	posture, ep := collectEndpoint(t, m, componentsdk.LevelTrust)
-	if idp := posture.ToIDPPosture(); idp == nil || *idp.UserSecurity.UsersPresent {
-		t.Error("no users should write an IDP artifact with no users present")
+	if idp := posture.ToIDPPosture(); idp == nil || *idp.UserSecurity.UsersPresent || idp.OrgDomain != "example.com" {
+		t.Error("no users should write an IDP artifact with no users present, named by the administrators' domain")
 	}
 	if ep.Fleet == nil || !*ep.Fleet.DevicesPresent {
 		t.Error("device evidence must not depend on user discovery")
