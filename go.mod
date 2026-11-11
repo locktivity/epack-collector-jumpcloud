@@ -2,6 +2,8 @@ module github.com/locktivity/epack-collector-jumpcloud
 
 go 1.26.10
 
+toolchain go1.26.11
+
 require (
 	github.com/locktivity/epack v0.10.5
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
