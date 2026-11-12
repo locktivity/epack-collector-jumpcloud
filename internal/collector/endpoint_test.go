@@ -28,6 +28,12 @@ func macWithFDE(id string, active *bool, lastContact time.Time) jumpcloud.System
 		LastContact: rfc(lastContact), FDE: &jumpcloud.SystemFDE{Active: active}}
 }
 
+// macWithoutFDE is a Mac whose record has no fde object, so it has no disk
+// encryption reading.
+func macWithoutFDE(id string, lastContact time.Time) jumpcloud.System {
+	return jumpcloud.System{ID: id, Hostname: "host-" + id, OS: "Mac OS X", OSFamily: "darwin", LastContact: rfc(lastContact)}
+}
+
 func windowsSystem(id string, lastContact time.Time) jumpcloud.System {
 	return jumpcloud.System{ID: id, Hostname: "host-" + id, OS: "Windows", OSFamily: "windows", LastContact: rfc(lastContact)}
 }
@@ -89,7 +95,7 @@ func TestEndpoint_TinyEvaluatedSubsetKeepsUnknownsVisible(t *testing.T) {
 	fresh := testNow.Add(-time.Hour)
 	systems := []jumpcloud.System{macWithFDE("a", boolPtr(true), fresh)}
 	for i := range 99 {
-		systems = append(systems, macWithFDE(fmt.Sprintf("u%02d", i), nil, fresh))
+		systems = append(systems, macWithoutFDE(fmt.Sprintf("u%02d", i), fresh))
 	}
 
 	ep := buildEndpointPosture(inputs(componentsdk.LevelTrust, systems...))
@@ -104,7 +110,7 @@ func TestEndpoint_TinyEvaluatedSubsetKeepsUnknownsVisible(t *testing.T) {
 }
 
 func TestEndpoint_ZeroEvaluatedOmitsPercentage(t *testing.T) {
-	ep := buildEndpointPosture(inputs(componentsdk.LevelTrust, macWithFDE("a", nil, testNow.Add(-time.Hour))))
+	ep := buildEndpointPosture(inputs(componentsdk.LevelTrust, macWithoutFDE("a", testNow.Add(-time.Hour))))
 
 	if ep.Hardening != nil && ep.Hardening.DiskEncryptionPct.Read {
 		t.Error("disk_encryption_pct must be omitted when nothing was evaluated")
@@ -259,20 +265,37 @@ func TestEndpoint_DuplicateSystemRowsCountOnce(t *testing.T) {
 	}
 }
 
+// A system with no fde object has no reading, which JumpCloud's data
+// gives, so the percentage stays over the devices that passed or failed. An
+// fde object with no active flag is a failed read: the device still counts
+// as unknown, and the percentage is left out.
 func TestEndpoint_FDEFalseIsFailureMissingIsUnknown(t *testing.T) {
 	fresh := testNow.Add(-time.Hour)
 	ep := buildEndpointPosture(inputs(componentsdk.LevelTrust,
 		macWithFDE("off", boolPtr(false), fresh),
-		macWithFDE("missing", nil, fresh),
-		jumpcloud.System{ID: "nofde", OS: "Mac OS X", LastContact: rfc(fresh)},
+		macWithoutFDE("nofde", fresh),
 	))
-
-	want := MetricCoverage{FailingDevicesCount: 1, UnknownDevicesCount: 2}
+	want := MetricCoverage{FailingDevicesCount: 1, UnknownDevicesCount: 1}
 	if got := ep.coverage["hardening.disk_encryption_pct"]; got != want {
 		t.Errorf("coverage = %+v, want %+v", got, want)
 	}
 	if *ep.Hardening.DiskEncryptionPct.Value != 0 {
 		t.Error("a known 0% must be emitted, not omitted")
+	}
+
+	ep = buildEndpointPosture(inputs(componentsdk.LevelTrust,
+		macWithFDE("off", boolPtr(false), fresh),
+		macWithFDE("missing", nil, fresh),
+	))
+	want = MetricCoverage{FailingDevicesCount: 1, UnknownDevicesCount: 1}
+	if got := ep.coverage["hardening.disk_encryption_pct"]; got != want {
+		t.Errorf("coverage = %+v, want %+v", got, want)
+	}
+	if ep.Hardening != nil && ep.Hardening.DiskEncryptionPct.Read {
+		t.Errorf("disk_encryption_pct = %v, want it left out while fde.active is missing", ep.Hardening.DiskEncryptionPct.Value)
+	}
+	if u := ep.missing[controlDiskEncryption]; len(u.devices) != 1 || u.devices["missing"] == nil {
+		t.Errorf("missing = %+v, want the device with no fde.active", u)
 	}
 }
 

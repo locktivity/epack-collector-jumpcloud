@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -137,9 +139,11 @@ func noSourceReason(code componentsdk.Code) string {
 
 // insightSource holds one System Insights table grouped by system ID, and
 // how complete the read was. err is the error the read failed with, and
-// capped is true when the collector's row limit stopped it.
+// capped is true when the collector's row limit stopped it. orphans counts
+// the rows with no system ID.
 type insightSource[T any] struct {
 	byDevice map[string][]T
+	orphans  int
 	capped   bool
 	err      error
 	op       string
@@ -150,9 +154,21 @@ func newInsightSource[T any](rows []T, capped bool, key func(T) string) *insight
 	for _, r := range rows {
 		if k := key(r); k != "" {
 			src.byDevice[k] = append(src.byDevice[k], r)
+		} else {
+			src.orphans++
 		}
 	}
 	return src
+}
+
+// none returns the reading of a device with no row in this table. A row
+// with no system ID could be the device's, so the reading is then unknown
+// because JumpCloud left the ID out.
+func (s *insightSource[T]) none() controlResult {
+	if s.orphans > 0 {
+		return missingField(s.op, "system_id", time.Time{})
+	}
+	return unknownBecause("")
 }
 
 // failure returns why the table's rows could not all be read, or nil. A
@@ -261,10 +277,24 @@ type controlResult struct {
 	// err is set when the reading is unknown because a table it needs
 	// could not be read. Such a reading is left out with a gap.
 	err error
+	// missing is set when the reading is unknown because JumpCloud left
+	// out a field it needs. The device still counts as unknown, and the
+	// control's percentage is left out with a partial gap. An unknown that
+	// JumpCloud's data gives, such as a stale or unrecognized reading, has
+	// no missing error.
+	missing error
 }
 
 func unknownBecause(reason string) controlResult {
 	return controlResult{state: stateUnknown, reason: reason}
+}
+
+// missingField returns the unknown reading of a device whose answer from op
+// has field missing or null. at is the observation time of the row that
+// lacks it, if the row has one.
+func missingField(op, field string, at time.Time) controlResult {
+	return controlResult{state: stateUnknown, observedAt: at, reason: reasonSourceError,
+		missing: componentsdk.CodeError(componentsdk.CodeInvalidResponse, fmt.Errorf("%s: %s is missing or null", op, field))}
 }
 
 type evaluatedDevice struct {
@@ -314,6 +344,7 @@ func buildEndpointPosture(in endpointInputs) *EndpointPosture {
 		Availability: []AvailabilityEntry{},
 		coverage:     map[string]MetricCoverage{},
 		unread:       map[string]unreadControl{},
+		missing:      map[string]unreadControl{},
 		noSource:     map[string]componentsdk.Code{},
 	}
 	if audit {
@@ -331,15 +362,12 @@ func buildEndpointPosture(in endpointInputs) *EndpointPosture {
 	for _, d := range devices {
 		ep.controlsByDevice[d.system.ID] = d.observations()
 		for name, r := range d.controls {
-			if r.err == nil {
-				continue
+			switch {
+			case r.err != nil:
+				ep.unread[name] = ep.unread[name].add(d.system.ID, r.err)
+			case r.missing != nil:
+				ep.missing[name] = ep.missing[name].add(d.system.ID, r.missing)
 			}
-			u := ep.unread[name]
-			if u.devices == nil {
-				u = unreadControl{devices: map[string]error{}, first: r.err}
-			}
-			u.devices[d.system.ID] = r.err
-			ep.unread[name] = u
 		}
 	}
 
@@ -501,8 +529,9 @@ func evaluateDevice(s *jumpcloud.System, in endpointInputs) evaluatedDevice {
 
 // applyFleetMetrics writes the fleet totals and each measured control's
 // percentage. A control with any reading a failed table read left out has
-// no percentage or coverage. The counts and coverage are written from the
-// audit level.
+// no percentage or coverage. A control with a device whose reading lacks a
+// field JumpCloud left out has coverage but no percentage. The counts and
+// coverage are written from the audit level.
 func applyFleetMetrics(ep *EndpointPosture, devices []evaluatedDevice, audit bool) {
 	total := len(devices)
 	mdm := 0
@@ -547,6 +576,8 @@ func applyFleetMetrics(ep *EndpointPosture, devices []evaluatedDevice, audit boo
 		}
 		value := endpointPct(cov, total)
 		switch {
+		case len(ep.missing[m.control].devices) > 0:
+			value = Percentage{}
 		case value.Read || len(reasons) > 0 || total == 0:
 		case unjudged(devices, m.control):
 			ep.Availability = append(ep.Availability, AvailabilityEntry{
@@ -712,7 +743,10 @@ func evalDiskEncryption(s *jumpcloud.System, family string, in endpointInputs) c
 	if !r.observedAt.IsZero() {
 		return r
 	}
-	if fde := fdeResult(s, in); fde.state == stateFail {
+	// Only a false flag counts here, so a missing field leaves the reading
+	// unknown only when the flag could be false.
+	fde := fdeResult(s, in)
+	if fde.state == stateFail || fde.missing != nil && s.FDE != nil && (s.FDE.Active == nil || !*s.FDE.Active) {
 		return fde
 	}
 	return r
@@ -720,16 +754,29 @@ func evalDiskEncryption(s *jumpcloud.System, family string, in endpointInputs) c
 
 // fdeResult reads the agent's fde.active flag. The flag carries no
 // observation time, so it is accepted only from devices whose last agent
-// contact is within the age limit, and no observed_at is reported.
+// contact is within the age limit, and no observed_at is reported. The fde
+// object is the agent's report, so a system with the agent and no fde
+// object is missing it, while a system without the agent, such as a phone
+// enrolled only in MDM, has no reading.
 func fdeResult(s *jumpcloud.System, in endpointInputs) controlResult {
 	if in.conflicts[s.ID].fde {
 		return unknownBecause(reasonSourceError)
 	}
+	agent := strings.TrimSpace(s.AgentVersion) != ""
+	if (s.FDE != nil || agent) && strings.TrimSpace(s.LastContact) == "" {
+		return missingField(jumpcloud.OpListSystems, "lastContact", time.Time{})
+	}
 	if !isFresh(s.LastContact, in) {
 		return unknownBecause(reasonStale)
 	}
-	if s.FDE == nil || s.FDE.Active == nil {
+	if s.FDE == nil && agent {
+		return missingField(jumpcloud.OpListSystems, "fde", time.Time{})
+	}
+	if s.FDE == nil {
 		return unknownBecause("")
+	}
+	if s.FDE.Active == nil {
+		return missingField(jumpcloud.OpListSystems, "fde.active", time.Time{})
 	}
 	if *s.FDE.Active {
 		return controlResult{state: statePass}
@@ -752,7 +799,7 @@ func evalBitLocker(systemID string, in endpointInputs) controlResult {
 	}
 	rows := src.byDevice[systemID]
 	if len(rows) == 0 {
-		return unknownBecause("")
+		return src.none()
 	}
 
 	byVolume := make(map[string][]jumpcloud.InsightBitLocker)
@@ -762,8 +809,12 @@ func evalBitLocker(systemID string, in endpointInputs) controlResult {
 	state := ""
 	staleVolume := false
 	var observed time.Time
-	for _, volumeRows := range byVolume {
-		v := fromRows(volumeRows, in, func(r jumpcloud.InsightBitLocker) string { return r.CollectionTime }, judgeBitLocker)
+	var missing error
+	for _, key := range slices.Sorted(maps.Keys(byVolume)) {
+		v := fromRows(byVolume[key], src.op, in, func(r jumpcloud.InsightBitLocker) string { return r.CollectionTime }, judgeBitLocker)
+		if missing == nil {
+			missing = v.missing
+		}
 		if v.observedAt.IsZero() {
 			staleVolume = true
 			continue
@@ -778,13 +829,18 @@ func evalBitLocker(systemID string, in endpointInputs) controlResult {
 			state = stateUnknown
 		}
 	}
-	if observed.IsZero() {
-		return unknownBecause(reasonStale)
+	r := controlResult{state: state, observedAt: observed}
+	switch {
+	case observed.IsZero():
+		r = unknownBecause(reasonStale)
+	case staleVolume:
+		r = controlResult{state: stateUnknown, observedAt: observed, reason: reasonStale}
 	}
-	if staleVolume {
-		return controlResult{state: stateUnknown, observedAt: observed, reason: reasonStale}
+	// A volume left unknown by a missing field leaves the device unknown.
+	if missing != nil {
+		r.state, r.reason, r.missing = stateUnknown, reasonSourceError, missing
 	}
-	return controlResult{state: state, observedAt: observed}
+	return r
 }
 
 func bitlockerVolumeKey(r jumpcloud.InsightBitLocker) string {
@@ -800,22 +856,29 @@ func bitlockerVolumeKey(r jumpcloud.InsightBitLocker) string {
 // judgeBitLocker passes only a fully encrypted volume with protection on.
 // Protection off (including suspended) fails, as do the recognized
 // not-fully-encrypted conversion states. Protection status 2 (unknown) and
-// unrecognized codes stay unknown.
-func judgeBitLocker(r jumpcloud.InsightBitLocker) string {
+// unrecognized codes stay unknown. Like every judge, it also names the null
+// field that left a reading unknown, or "" when none did.
+func judgeBitLocker(r jumpcloud.InsightBitLocker) (string, string) {
 	ps, cs := r.ProtectionStatus, r.ConversionStatus
 	if ps != nil && *ps == 1 && cs != nil && *cs == 1 {
-		return statePass
+		return statePass, ""
 	}
 	if ps != nil && *ps == 0 {
-		return stateFail
+		return stateFail, ""
 	}
 	if cs != nil {
 		switch *cs {
 		case 0, 2, 3, 4, 5:
-			return stateFail
+			return stateFail, ""
 		}
 	}
-	return stateUnknown
+	switch {
+	case ps == nil:
+		return stateUnknown, "protection_status"
+	case cs == nil:
+		return stateUnknown, "conversion_status"
+	}
+	return stateUnknown, ""
 }
 
 func evalFirewall(s *jumpcloud.System, family string, in endpointInputs) controlResult {
@@ -828,32 +891,32 @@ func evalFirewall(s *jumpcloud.System, family string, in endpointInputs) control
 	return unknownBecause("")
 }
 
-func judgeALF(r jumpcloud.InsightALF) string {
+func judgeALF(r jumpcloud.InsightALF) (string, string) {
 	if r.GlobalState == nil {
-		return stateUnknown
+		return stateUnknown, "global_state"
 	}
 	switch *r.GlobalState {
 	case 0:
-		return stateFail
+		return stateFail, ""
 	case 1, 2:
-		return statePass
+		return statePass, ""
 	}
-	return stateUnknown
+	return stateUnknown, ""
 }
 
 // judgeWSCFirewall maps Windows Security Center health. Only Good and Poor
 // are definitive. Snoozed, Not Monitored, and Error are unknown.
-func judgeWSCFirewall(r jumpcloud.InsightWindowsSecurityCenter) string {
+func judgeWSCFirewall(r jumpcloud.InsightWindowsSecurityCenter) (string, string) {
 	if r.Firewall == nil {
-		return stateUnknown
+		return stateUnknown, "firewall"
 	}
 	switch strings.ToLower(strings.TrimSpace(*r.Firewall)) {
 	case "good":
-		return statePass
+		return statePass, ""
 	case "poor":
-		return stateFail
+		return stateFail, ""
 	}
-	return stateUnknown
+	return stateUnknown, ""
 }
 
 // productKind classifies a Windows Security Center product row. Rows with a
@@ -871,23 +934,28 @@ func productKind(r jumpcloud.InsightWindowsSecurityProduct) string {
 
 // productHealth is pass for a product that is on with current signatures,
 // fail for one that is off, snoozed, expired, or has outdated signatures,
-// and unknown otherwise.
-func productHealth(r jumpcloud.InsightWindowsSecurityProduct) string {
+// and unknown otherwise. It also names the null field that left the
+// product unknown, or "" when none did.
+func productHealth(r jumpcloud.InsightWindowsSecurityProduct) (string, string) {
 	state := ""
 	if r.State != nil {
 		state = strings.ToLower(strings.TrimSpace(*r.State))
 	}
 	sig := r.SignaturesUpToDate
 	if state == "on" && sig != nil && *sig == 1 {
-		return statePass
+		return statePass, ""
 	}
 	switch {
 	case state == "off" || state == "snoozed" || state == "expired":
-		return stateFail
+		return stateFail, ""
 	case sig != nil && *sig == 0:
-		return stateFail
+		return stateFail, ""
+	case r.State == nil:
+		return stateUnknown, "state"
+	case sig == nil:
+		return stateUnknown, "signatures_up_to_date"
 	}
-	return stateUnknown
+	return stateUnknown, ""
 }
 
 // evalAntimalware reads the products registered with Windows Security
@@ -901,14 +969,26 @@ func evalAntimalware(s *jumpcloud.System, family string, in endpointInputs) (con
 	if src.failure() != nil {
 		return src.unread(), src.unread()
 	}
-	if src == nil || len(src.byDevice[s.ID]) == 0 {
+	if src == nil {
 		return unknownBecause(""), unknownBecause("")
 	}
-	latest, at, ok := latestFresh(src.byDevice[s.ID], func(r jumpcloud.InsightWindowsSecurityProduct) string { return r.CollectionTime }, in)
-	if !ok {
+	rows := src.byDevice[s.ID]
+	if len(rows) == 0 {
+		return src.none(), src.none()
+	}
+	ts := func(r jumpcloud.InsightWindowsSecurityProduct) string { return r.CollectionTime }
+	latest, at, ok := latestFresh(rows, ts, in)
+	switch {
+	case !ok && undated(rows, ts):
+		r := missingField(src.op, "collection_time", time.Time{})
+		return r, r
+	case !ok:
 		return unknownBecause(reasonStale), unknownBecause(reasonStale)
 	}
 
+	// absent names the first null field that left a product unclassified
+	// or its health unknown.
+	absent := ""
 	unclassified := 0
 	var antivirus []jumpcloud.InsightWindowsSecurityProduct
 	for _, r := range latest {
@@ -917,6 +997,9 @@ func evalAntimalware(s *jumpcloud.System, family string, in endpointInputs) (con
 			antivirus = append(antivirus, r)
 		case "":
 			unclassified++
+			if r.Type == nil && absent == "" {
+				absent = "type"
+			}
 		}
 	}
 
@@ -925,7 +1008,11 @@ func evalAntimalware(s *jumpcloud.System, family string, in endpointInputs) (con
 	unknown := controlResult{state: stateUnknown, observedAt: at}
 
 	if len(antivirus) == 0 {
-		if unclassified > 0 {
+		switch {
+		case unclassified > 0 && absent != "":
+			r := missingField(src.op, absent, at)
+			return r, r
+		case unclassified > 0:
 			return unknown, unknown
 		}
 		return fail, fail
@@ -933,15 +1020,22 @@ func evalAntimalware(s *jumpcloud.System, family string, in endpointInputs) (con
 
 	allFailing := unclassified == 0
 	for _, r := range antivirus {
-		switch productHealth(r) {
+		state, field := productHealth(r)
+		switch state {
 		case statePass:
 			return pass, pass
 		case stateUnknown:
 			allFailing = false
+			if absent == "" {
+				absent = field
+			}
 		}
 	}
-	if allFailing {
+	switch {
+	case allFailing:
 		return pass, fail
+	case absent != "":
+		return pass, missingField(src.op, absent, at)
 	}
 	return pass, unknown
 }
@@ -982,7 +1076,7 @@ func localAdmins(systemID string, in endpointInputs) *[]LocalAdminAccount {
 }
 
 // fromInsight evaluates a single-reading control for a device from a table.
-func fromInsight[T any](src *insightSource[T], systemID string, in endpointInputs, ts func(T) string, judge func(T) string) controlResult {
+func fromInsight[T any](src *insightSource[T], systemID string, in endpointInputs, ts func(T) string, judge func(T) (string, string)) controlResult {
 	if src == nil {
 		return unknownBecause("")
 	}
@@ -991,28 +1085,46 @@ func fromInsight[T any](src *insightSource[T], systemID string, in endpointInput
 	}
 	rows := src.byDevice[systemID]
 	if len(rows) == 0 {
-		return unknownBecause("")
+		return src.none()
 	}
-	return fromRows(rows, in, ts, judge)
+	return fromRows(rows, src.op, in, ts, judge)
 }
 
-// fromRows judges the latest fresh rows. Rows sharing the latest timestamp
-// that disagree yield unknown rather than picking one.
-func fromRows[T any](rows []T, in endpointInputs, ts func(T) string, judge func(T) string) controlResult {
+// fromRows judges the latest fresh rows from op. Rows sharing the latest
+// timestamp that disagree yield unknown rather than picking one. A reading
+// left unknown by a null field the judge names, or with no fresh row
+// because a row has no collection time, lacks a field JumpCloud left out.
+func fromRows[T any](rows []T, op string, in endpointInputs, ts func(T) string, judge func(T) (string, string)) controlResult {
 	latest, at, ok := latestFresh(rows, ts, in)
-	if !ok {
+	switch {
+	case !ok && undated(rows, ts):
+		return missingField(op, "collection_time", time.Time{})
+	case !ok:
 		return unknownBecause(reasonStale)
 	}
-	state := ""
+	state, absent := "", ""
 	for _, r := range latest {
-		s := judge(r)
-		if state == "" {
+		s, field := judge(r)
+		if absent == "" {
+			absent = field
+		}
+		switch {
+		case state == "":
 			state = s
-		} else if state != s {
-			return controlResult{state: stateUnknown, observedAt: at}
+		case state != s:
+			state = stateUnknown
 		}
 	}
+	if state == stateUnknown && absent != "" {
+		return missingField(op, absent, at)
+	}
 	return controlResult{state: state, observedAt: at}
+}
+
+// undated reports whether any row has no collection time. System Insights
+// sends one on every row.
+func undated[T any](rows []T, ts func(T) string) bool {
+	return slices.ContainsFunc(rows, func(r T) bool { return strings.TrimSpace(ts(r)) == "" })
 }
 
 // --- Observation time handling ---
@@ -1122,7 +1234,9 @@ func osFamily(s *jumpcloud.System) string {
 
 // deviceControlsFrom copies the endpoint artifact's control coverage into the
 // detailed artifact, so both report identical figures. A control with any
-// reading a failed table read left out has no summary.
+// reading a failed table read left out has no summary. A control with a
+// device whose reading lacks a field JumpCloud left out has a null
+// percentage.
 func deviceControlsFrom(ep *EndpointPosture) *DeviceControls {
 	dc := &DeviceControls{
 		DiscoveryComplete:        ep.Scope.DiscoveryComplete,
@@ -1136,8 +1250,12 @@ func deviceControlsFrom(ep *EndpointPosture) *DeviceControls {
 		if !ok || len(ep.unread[m.control].devices) > 0 {
 			return nil
 		}
+		passing := coveragePct(cov)
+		if len(ep.missing[m.control].devices) > 0 {
+			passing = nil
+		}
 		return &ControlSummary{
-			PassingPct:                coveragePct(cov),
+			PassingPct:                passing,
 			PassingDevicesCount:       cov.PassingDevicesCount,
 			FailingDevicesCount:       cov.FailingDevicesCount,
 			UnknownDevicesCount:       cov.UnknownDevicesCount,

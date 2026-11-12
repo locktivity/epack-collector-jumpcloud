@@ -108,6 +108,50 @@ func kitReadOnlyAdmins(clean kitTenant) collectortest.Scenario {
 	}
 }
 
+// kitAdminWithNoRole lists the billing administrator with a null roleName.
+// That administrator could hold any role, so the counts that depend on
+// roles are left out, and the Administrator role still shows that a
+// privileged user is present.
+func kitAdminWithNoRole(clean kitTenant) collectortest.Scenario {
+	t := clean
+	t.admins = kitV1(len(kitAdminRows), kitFieldTo(kitAdminRows[0], "roleName", nil), kitAdminRows[1])
+	return collectortest.Scenario{
+		Name:      "administrator with no role",
+		Responses: t.responses(),
+		Expect: map[string]map[string]any{
+			detailedPath: {"/admins/super_admin_count": nil, "/admins/total_admins": 2},
+			idpPosturePath: {
+				"/privileged_access/super_admin_count":        collectortest.Absent,
+				"/privileged_access/privileged_users_count":   collectortest.Absent,
+				"/privileged_access/privileged_users_present": true,
+			},
+		},
+	}
+}
+
+// kitSystemsWithNoLastContact lists every system with a null lastContact,
+// which leaves the agent's fde.active flag undated. The Mac and the server
+// count as unknown, and the disk encryption percentage is left out rather
+// than taken over the PC alone.
+func kitSystemsWithNoLastContact(clean kitTenant) collectortest.Scenario {
+	t := clean
+	t.systems = kitFieldTo(clean.systems, "lastContact", nil)
+	return collectortest.Scenario{
+		Name:      "systems with no lastContact",
+		Responses: t.responses(),
+		Expect: map[string]map[string]any{
+			detailedPath: {
+				"/device_controls/disk_encryption/passing_pct":           nil,
+				"/device_controls/disk_encryption/unknown_devices_count": 2,
+			},
+			endpointPosturePath: {
+				"/hardening/disk_encryption_pct":                                      collectortest.Absent,
+				"/metric_coverage/hardening.disk_encryption_pct/unknown_device_count": 2,
+			},
+		},
+	}
+}
+
 func TestCollectorKit(t *testing.T) {
 	clean := kitCleanTenant()
 	collectortest.Run(t, collectortest.Suite{
@@ -209,6 +253,8 @@ func TestCollectorKit(t *testing.T) {
 				},
 			},
 			kitReadOnlyAdmins(clean),
+			kitAdminWithNoRole(clean),
+			kitSystemsWithNoLastContact(clean),
 			{
 				// JumpCloud reports seven users and ends the list after five.
 				Name: "users listed in part",
@@ -298,18 +344,213 @@ func kitRun(t *testing.T, config map[string]any, responses []collectortest.Respo
 // kitField returns the top-level key of the artifact the run wrote at path.
 func kitField(t *testing.T, res componentsdk.InProcessResult, path, key string) any {
 	t.Helper()
+	v, _ := kitAt(t, res, path, "/"+key)
+	return v
+}
+
+// kitAt returns the value at pointer in the artifact the run wrote at path,
+// and whether the artifact has one. The pointer names object keys only.
+func kitAt(t *testing.T, res componentsdk.InProcessResult, path, pointer string) (any, bool) {
+	t.Helper()
 	for _, artifact := range res.Artifacts {
 		if artifact.Path != path {
 			continue
 		}
-		var doc map[string]any
-		if err := json.Unmarshal(artifact.Data, &doc); err != nil {
+		var v any
+		if err := json.Unmarshal(artifact.Data, &v); err != nil {
 			t.Fatal(err)
 		}
-		return doc[key]
+		for _, key := range strings.Split(pointer, "/")[1:] {
+			obj, ok := v.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			if v, ok = obj[key]; !ok {
+				return nil, false
+			}
+		}
+		return v, true
 	}
 	t.Fatalf("the run wrote no %s", path)
-	return nil
+	return nil, false
+}
+
+// kitGap returns the gap the run recorded at path and pointer.
+func kitGap(res componentsdk.InProcessResult, path, pointer string) (componentsdk.Gap, bool) {
+	for _, g := range res.Result.Gaps {
+		if g.Path == path && g.Pointer == pointer {
+			return g, true
+		}
+	}
+	return componentsdk.Gap{}, false
+}
+
+// kitWantPartial reports a problem unless the run left the value at path
+// and pointer out with an invalid_response partial gap over unmeasured
+// items. absent says whether the value is left out of the artifact, rather
+// than written as null.
+func kitWantPartial(t *testing.T, res componentsdk.InProcessResult, path, pointer string, absent bool, unmeasured int) {
+	t.Helper()
+	switch v, ok := kitAt(t, res, path, pointer); {
+	case absent && ok:
+		t.Errorf("%s %s = %v, want it left out", path, pointer, v)
+	case !absent && (!ok || v != nil):
+		t.Errorf("%s %s = %v, want null", path, pointer, v)
+	}
+	g, ok := kitGap(res, path, pointer)
+	if !ok || g.Status != componentsdk.GapPartial || g.Code != componentsdk.CodeInvalidResponse || g.Unmeasured != unmeasured {
+		t.Errorf("gap at %s %s = %+v, want a partial invalid_response gap over %d", path, pointer, g, unmeasured)
+	}
+}
+
+// An administrator JumpCloud lists with no roleName could hold any role,
+// Administrator With Billing included. So super_admin_count, and each
+// identity value that depends on roles, is left out with a partial gap
+// rather than written lower. Another administrator's privileged role still
+// shows that one is present.
+func TestRunLeavesRoleCountsOutForAnAdministratorWithNoRole(t *testing.T) {
+	roleDependent := []string{
+		"/privileged_access/super_admin_count",
+		"/privileged_access/privileged_users_count",
+		"/privileged_access/privileged_mfa_user_count",
+		"/privileged_access/privileged_mfa_coverage_pct",
+	}
+	for name, role := range map[string]any{"missing": kitDropped{}, "null": nil, "empty": ""} {
+		t.Run(name, func(t *testing.T) {
+			tenant := kitCleanTenant()
+			tenant.admins = kitV1(2, kitFieldTo(kitAdminRows[0], "roleName", role), kitAdminRows[1])
+			res := kitRun(t, kitConfig(), tenant.responses())
+
+			kitWantPartial(t, res, detailedPath, "/admins/super_admin_count", false, 1)
+			if v, _ := kitAt(t, res, detailedPath, "/admins/total_admins"); v != float64(2) {
+				t.Errorf("total_admins = %v, want 2", v)
+			}
+			for _, pointer := range roleDependent {
+				kitWantPartial(t, res, idpPosturePath, pointer, true, 1)
+			}
+			if v, _ := kitAt(t, res, idpPosturePath, "/privileged_access/privileged_users_present"); v != true {
+				t.Errorf("privileged_users_present = %v, want true from the Administrator role", v)
+			}
+			if g, ok := kitGap(res, idpPosturePath, "/privileged_access/privileged_users_present"); ok {
+				t.Errorf("gap at privileged_users_present = %+v, want none", g)
+			}
+			for _, check := range res.Result.Checks {
+				t.Errorf("check finding %+v", check)
+			}
+		})
+	}
+
+	t.Run("no role known", func(t *testing.T) {
+		tenant := kitCleanTenant()
+		tenant.admins = kitFieldTo(tenant.admins, "roleName", nil)
+		res := kitRun(t, kitConfig(), tenant.responses())
+		kitWantPartial(t, res, detailedPath, "/admins/super_admin_count", false, 2)
+		for _, pointer := range append(roleDependent, "/privileged_access/privileged_users_present") {
+			kitWantPartial(t, res, idpPosturePath, pointer, true, 2)
+		}
+	})
+}
+
+// When JumpCloud leaves out a field a device's reading needs, the device
+// counts as unknown, and the control's percentage is left out with a
+// partial gap over those devices, in both artifacts. An unknown that
+// JumpCloud's data gives, such as a stale reading or an unrecognized
+// state, leaves the percentage over the other devices with no gap.
+func TestRunLeavesOutAPercentageWhenAFieldIsMissing(t *testing.T) {
+	disk, firewall, installed, healthy := measuredMetrics[0], measuredMetrics[1], measuredMetrics[2], measuredMetrics[3]
+	type metric struct {
+		endpointMetric
+		unmeasured, unknown int
+	}
+	cases := []struct {
+		name    string
+		edit    func(*kitTenant)
+		metrics []metric
+	}{
+		{"systems lastContact null", func(k *kitTenant) { k.systems = kitFieldTo(k.systems, "lastContact", nil) },
+			[]metric{{disk, 2, 2}}},
+		{"systems fde.active dropped", func(k *kitTenant) { k.systems = kitFieldTo(k.systems, "fde/active", kitDropped{}) },
+			[]metric{{disk, 2, 2}}},
+		{"systems fde dropped", func(k *kitTenant) { k.systems = kitFieldTo(k.systems, "fde", kitDropped{}) },
+			[]metric{{disk, 2, 2}}},
+		{"systems fde null", func(k *kitTenant) { k.systems = kitFieldTo(k.systems, "fde", nil) },
+			[]metric{{disk, 2, 2}}},
+		{"bitlocker_info collection_time null", func(k *kitTenant) { k.bitlocker = kitFieldTo(k.bitlocker, "collection_time", nil) },
+			[]metric{{disk, 1, 1}}},
+		{"bitlocker_info system_id null", func(k *kitTenant) { k.bitlocker = kitFieldTo(k.bitlocker, "system_id", nil) },
+			[]metric{{disk, 1, 1}}},
+		{"bitlocker_info protection_status null", func(k *kitTenant) { k.bitlocker = kitFieldTo(k.bitlocker, "protection_status", nil) },
+			[]metric{{disk, 1, 1}}},
+		{"bitlocker_info conversion_status dropped", func(k *kitTenant) { k.bitlocker = kitFieldTo(k.bitlocker, "conversion_status", kitDropped{}) },
+			[]metric{{disk, 1, 1}}},
+		{"alf collection_time null", func(k *kitTenant) { k.alf = kitFieldTo(k.alf, "collection_time", nil) },
+			[]metric{{firewall, 1, 2}}},
+		{"alf system_id null", func(k *kitTenant) { k.alf = kitFieldTo(k.alf, "system_id", nil) },
+			[]metric{{firewall, 1, 2}}},
+		{"alf global_state null", func(k *kitTenant) { k.alf = kitFieldTo(k.alf, "global_state", nil) },
+			[]metric{{firewall, 1, 2}}},
+		{"windows_security_center collection_time dropped", func(k *kitTenant) { k.securityCenter = kitFieldTo(k.securityCenter, "collection_time", kitDropped{}) },
+			[]metric{{firewall, 1, 2}}},
+		{"windows_security_center system_id null", func(k *kitTenant) { k.securityCenter = kitFieldTo(k.securityCenter, "system_id", nil) },
+			[]metric{{firewall, 1, 2}}},
+		{"windows_security_center firewall null", func(k *kitTenant) { k.securityCenter = kitFieldTo(k.securityCenter, "firewall", nil) },
+			[]metric{{firewall, 1, 2}}},
+		{"windows_security_products collection_time null", func(k *kitTenant) { k.products = kitFieldTo(k.products, "collection_time", nil) },
+			[]metric{{installed, 1, 3}, {healthy, 1, 3}}},
+		{"windows_security_products system_id null", func(k *kitTenant) { k.products = kitFieldTo(k.products, "system_id", nil) },
+			[]metric{{installed, 1, 3}, {healthy, 1, 3}}},
+		{"windows_security_products type null", func(k *kitTenant) { k.products = kitFieldTo(k.products, "type", nil) },
+			[]metric{{installed, 1, 3}, {healthy, 1, 3}}},
+		{"windows_security_products state null", func(k *kitTenant) { k.products = kitFieldTo(k.products, "state", nil) },
+			[]metric{{healthy, 1, 3}}},
+		{"windows_security_products signatures_up_to_date dropped", func(k *kitTenant) {
+			k.products = kitFieldTo(k.products, "signatures_up_to_date", kitDropped{})
+		}, []metric{{healthy, 1, 3}}},
+		{"systems lastContact a month old", func(k *kitTenant) { k.systems = kitFieldTo(k.systems, "lastContact", "2026-09-01T00:00:00.000Z") },
+			[]metric{{disk, 0, 2}}},
+		{"alf global_state unrecognized", func(k *kitTenant) { k.alf = kitFieldTo(k.alf, "global_state", 7) },
+			[]metric{{firewall, 0, 2}}},
+		{"systems without the agent or fde", func(k *kitTenant) {
+			k.systems = kitFieldTo(kitFieldTo(k.systems, "agentVersion", kitDropped{}), "fde", kitDropped{})
+		}, []metric{{disk, 0, 2}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tenant := kitCleanTenant()
+			tc.edit(&tenant)
+			res := kitRun(t, kitConfig(), tenant.responses())
+			for _, m := range tc.metrics {
+				pct := m.summary + "/passing_pct"
+				if m.unmeasured > 0 {
+					kitWantPartial(t, res, detailedPath, pct, false, m.unmeasured)
+					kitWantPartial(t, res, endpointPosturePath, m.pointer, true, m.unmeasured)
+				} else {
+					if v, _ := kitAt(t, res, detailedPath, pct); v == nil {
+						t.Errorf("%s is null, want it over the devices that passed or failed", pct)
+					}
+					if _, ok := kitAt(t, res, endpointPosturePath, m.pointer); !ok {
+						t.Errorf("%s left out, want it over the devices that passed or failed", m.pointer)
+					}
+					for _, at := range []componentsdk.Location{detailed(pct), endpoint(m.pointer)} {
+						if g, ok := kitGap(res, at.Path, at.Pointer); ok {
+							t.Errorf("gap at %s %s = %+v, want none", at.Path, at.Pointer, g)
+						}
+					}
+				}
+				for _, at := range []componentsdk.Location{
+					detailed(m.summary + "/unknown_devices_count"),
+					endpoint("/metric_coverage/" + m.path + "/unknown_device_count"),
+				} {
+					if v, _ := kitAt(t, res, at.Path, at.Pointer); v != float64(m.unknown) {
+						t.Errorf("%s %s = %v, want %d", at.Path, at.Pointer, v, m.unknown)
+					}
+				}
+			}
+			for _, check := range res.Result.Checks {
+				t.Errorf("check finding %+v", check)
+			}
+		})
+	}
 }
 
 // A trust run writes no organization, user, or device ID: not in the

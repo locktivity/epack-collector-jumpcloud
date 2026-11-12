@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -177,6 +178,51 @@ func (t kitTenant) responses() []collectortest.Response {
 		{URL: kitConsole + "/api/v2/systemgroups", Body: t.systemGroups},
 		{Method: http.MethodPost, URL: kitAPI + "/insights/directory/v1/events", Body: t.events},
 	}
+}
+
+// kitDropped is the value kitFieldTo gives a field it leaves out.
+type kitDropped struct{}
+
+// kitFieldTo returns the JSON body with every field at field set to value,
+// or left out when value is kitDropped{}. field is a key, or keys joined by
+// "/" for a key inside another, such as "fde/active". It matches at any
+// depth.
+func kitFieldTo(body, field string, value any) string {
+	dec := json.NewDecoder(strings.NewReader(body))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		panic("kit fixture: " + err.Error())
+	}
+	path := strings.Split(field, "/")
+	var walk func(v any, at []string)
+	walk = func(v any, at []string) {
+		switch v := v.(type) {
+		case map[string]any:
+			for key, child := range v {
+				switch {
+				case key != at[0]:
+					walk(child, path)
+				case len(at) > 1:
+					walk(child, at[1:])
+				case value == kitDropped{}:
+					delete(v, key)
+				default:
+					v[key] = value
+				}
+			}
+		case []any:
+			for _, child := range v {
+				walk(child, path)
+			}
+		}
+	}
+	walk(doc, path)
+	out, err := json.Marshal(doc)
+	if err != nil {
+		panic("kit fixture: " + err.Error())
+	}
+	return string(out)
 }
 
 // kitRefused answers url with a 403, the status for a read the API key's

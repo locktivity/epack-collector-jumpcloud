@@ -203,8 +203,8 @@ func TestCollect_TrustLevel(t *testing.T) {
 		t.Errorf("admins.total = %d, want 3", posture.Admins.TotalAdmins)
 	}
 	// Only "Administrator With Billing" is super-admin
-	if posture.Admins.SuperAdminCount != 1 {
-		t.Errorf("super_admin_count = %d, want 1", posture.Admins.SuperAdminCount)
+	if got := posture.Admins.SuperAdminCount; got == nil || *got != 1 {
+		t.Errorf("super_admin_count = %v, want 1", got)
 	}
 
 	if posture.Devices == nil {
@@ -665,7 +665,7 @@ func TestAdmins_SuspendedAdminIsNotCounted(t *testing.T) {
 		t.Fatalf("Collect: %v", err)
 	}
 	a := posture.Admins
-	if a.TotalAdmins != 1 || a.SuperAdminCount != 1 || a.TOTPEnrolledCount != 1 || *a.TOTPEnrolledPct != 100 || a.MFARequiredCount != 1 {
+	if a.TotalAdmins != 1 || a.SuperAdminCount == nil || *a.SuperAdminCount != 1 || a.TOTPEnrolledCount != 1 || *a.TOTPEnrolledPct != 100 || a.MFARequiredCount != 1 {
 		t.Errorf("admins = %+v, want only the admin who is not suspended", a)
 	}
 	pa := posture.ToIDPPosture().PrivilegedAccess

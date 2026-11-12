@@ -219,12 +219,15 @@
           "x-epack-method": "Counts the administrators /api/users lists whose suspended flag is false, every page included."
         },
         "super_admin_count": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0,
-          "description": "Administrators with the Administrator With Billing role who are not suspended",
+          "description": "Administrators with the Administrator With Billing role who are not suspended. Null, with a partial gap, when an administrator who is not suspended has no roleName, since that administrator could hold the role",
           "x-epack-label": "Billing administrators",
           "x-epack-summary": "Administrators with the Administrator With Billing role, the highest JumpCloud privilege. Suspended administrators are not counted.",
-          "x-epack-method": "Counts the administrators who are not suspended and whose roleName is Administrator With Billing."
+          "x-epack-method": "Counts the administrators who are not suspended and whose roleName is Administrator With Billing. It is null when one of them has no roleName."
         },
         "totp_enrolled_count": {
           "type": "integer",
@@ -476,7 +479,7 @@
               ],
               "minimum": 0,
               "maximum": 100,
-              "description": "Percentage of the devices whose disk encryption reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed",
+              "description": "Percentage of the devices whose disk encryption reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed. Also null, with a partial gap, when JumpCloud left out a field a device's reading needs, such as lastContact or a System Insights row's collection_time. The device still counts as unknown",
               "x-epack-label": "Disk encryption share",
               "x-epack-summary": "Share of evaluated devices with full-disk encryption on. On Windows, every BitLocker volume must be fully encrypted with protection on, and devices with no usable reading are left out of the share.",
               "x-epack-method": "Divides the devices whose disk encryption reading passed by the devices whose reading passed or failed. Windows readings come from System Insights bitlocker_info, and other systems' readings from the agent's fde.active flag.",
@@ -539,7 +542,7 @@
               ],
               "minimum": 0,
               "maximum": 100,
-              "description": "Percentage of the devices whose firewall reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed",
+              "description": "Percentage of the devices whose firewall reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed. Also null, with a partial gap, when JumpCloud left out a field a device's reading needs, such as lastContact or a System Insights row's collection_time. The device still counts as unknown",
               "x-epack-label": "Firewall share",
               "x-epack-summary": "Share of evaluated devices with the host firewall turned on. Devices with no usable reading are left out of the share and counted as unknown.",
               "x-epack-method": "Divides the devices whose firewall reading passed by the devices whose reading passed or failed. macOS readings come from System Insights alf, and Windows readings from windows_security_center.",
@@ -602,7 +605,7 @@
               ],
               "minimum": 0,
               "maximum": 100,
-              "description": "Percentage of the devices whose antimalware installed reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed",
+              "description": "Percentage of the devices whose antimalware installed reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed. Also null, with a partial gap, when JumpCloud left out a field a device's reading needs, such as lastContact or a System Insights row's collection_time. The device still counts as unknown",
               "x-epack-label": "Antimalware installed share",
               "x-epack-summary": "Share of evaluated Windows devices with an antivirus product registered. Devices with no usable reading are left out of the share and counted as unknown.",
               "x-epack-method": "Divides the devices whose antimalware installed reading passed by the devices whose reading passed or failed. Readings come from System Insights windows_security_products, on Windows only.",
@@ -665,7 +668,7 @@
               ],
               "minimum": 0,
               "maximum": 100,
-              "description": "Percentage of the devices whose antimalware healthy reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed",
+              "description": "Percentage of the devices whose antimalware healthy reading passed, out of those whose reading passed or failed. Null when no device's reading passed or failed. Also null, with a partial gap, when JumpCloud left out a field a device's reading needs, such as lastContact or a System Insights row's collection_time. The device still counts as unknown",
               "x-epack-label": "Antimalware healthy share",
               "x-epack-summary": "Share of evaluated Windows devices with antivirus on and signatures current. Devices with no usable reading are left out of the share and counted as unknown.",
               "x-epack-method": "Divides the devices whose antimalware healthy reading passed by the devices whose reading passed or failed. Readings come from System Insights windows_security_products, on Windows only.",
