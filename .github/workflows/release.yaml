@@ -75,6 +75,10 @@ jobs:
       go-version-file: go.mod
       config-file: .slsa-goreleaser/epack-collector-jumpcloud-${{ matrix.os }}-${{ matrix.arch }}.yml
       evaluated-envs: "VERSION:${{ needs.args.outputs.version }},COMMIT:${{ needs.args.outputs.commit }}"
+      # Each platform's build would otherwise create the release itself, and
+      # builds that finish together fail with already_exists or leave two
+      # releases for one tag. The release job creates it once with every file.
+      upload-assets: false
 
   release:
     needs: [args, build]
@@ -95,9 +99,9 @@ jobs:
           find artifacts -type f \( -name "epack-collector-jumpcloud-*" -o -name "*.intoto.jsonl" \) -exec mv {} release/ \;
           cd release
           for f in *.intoto.jsonl; do
-            [ -f "$f" ] && mv "$f" "${f%.intoto.jsonl}.sigstore.json"
+            [ -f "$f" ] && cp "$f" "${f%.intoto.jsonl}.sigstore.json"
           done
-          sha256sum * > checksums.txt
+          sha256sum -- * > checksums.txt
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
