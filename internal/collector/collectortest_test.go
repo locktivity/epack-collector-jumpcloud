@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,33 @@ func kitClean() collectortest.Scenario {
 				"/hardening/disk_encryption_pct":             66,
 				"/protection/antimalware_healthy_pct":        100,
 				"/devices/1/local_admin_accounts/0/username": "alice",
+			},
+		},
+	}
+}
+
+// kitReadOnlyAdmins adds a Read Only and a Billing Only administrator,
+// neither with TOTP enrolled. Neither role can change who has access or how
+// users sign in, so the privileged users are still the two administrators
+// with TOTP, and their MFA coverage stays known. The policy values are left
+// out with a not_read gap.
+func kitReadOnlyAdmins(clean kitTenant) collectortest.Scenario {
+	rows := append(slices.Clone(kitAdminRows),
+		`{"_id": "a3", "email": "auditor@example.com", "enableMultiFactor": false, "totpEnrolled": false, "roleName": "Read Only", "created": "2024-07-01T00:00:00.000Z"}`,
+		`{"_id": "a4", "email": "finance@example.com", "enableMultiFactor": false, "totpEnrolled": false, "roleName": "Billing Only", "created": "2024-08-01T00:00:00.000Z"}`,
+	)
+	t := clean
+	t.admins = kitV1(len(rows), rows...)
+	return collectortest.Scenario{
+		Name:      "read-only and billing administrators",
+		Responses: t.responses(),
+		Expect: map[string]map[string]any{
+			detailedPath: {"/admins/total_admins": 4},
+			idpPosturePath: {
+				"/privileged_access/privileged_users_count":      2,
+				"/privileged_access/privileged_mfa_user_count":   2,
+				"/privileged_access/privileged_mfa_coverage_pct": 100,
+				"/policy": collectortest.Absent,
 			},
 		},
 	}
@@ -180,6 +208,7 @@ func TestCollectorKit(t *testing.T) {
 					endpointPosturePath: {"/hardening/disk_encryption_pct": 66},
 				},
 			},
+			kitReadOnlyAdmins(clean),
 			{
 				// JumpCloud reports seven users and ends the list after five.
 				Name: "users listed in part",
