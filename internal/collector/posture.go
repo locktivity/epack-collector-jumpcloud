@@ -95,6 +95,11 @@ type AdminMetrics struct {
 	TOTPEnrolledPct   *float64 `json:"totp_enrolled_pct"`
 	MFARequiredCount  int      `json:"mfa_required_count"`
 	Partial           bool     `json:"partial,omitempty"`
+
+	// privileged counts the administrators whose role can change who has
+	// access or how users sign in, and privilegedTOTP those of them with
+	// TOTP enrolled. The idp-posture artifact counts these.
+	privileged, privilegedTOTP int
 }
 
 // AppMetrics contains SSO application metrics. SSOCoveragePct is null when

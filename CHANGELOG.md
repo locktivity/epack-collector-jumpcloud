@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.2.2
+
+- The identity artifact's `privileged_access` counts administrators with every role but Read Only and Billing Only, which cannot change who has access or how users sign in. Command Runner, Help Desk, and Manager still count. The detailed artifact's `admins` section still counts every administrator who is not suspended.
+- The identity artifact's `policy.mfa_required`, `mfa_required_user_count`, `mfa_required_coverage_pct` and `legacy_auth_blocked` are left out with a `not_read` gap. The collector reads JumpCloud's authentication policies for the detailed artifact, but does not work out what they enforce for every user and every sign-in.
 - The collector is built on Go 1.26.11.
 
 ## v0.2.1

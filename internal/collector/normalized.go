@@ -12,6 +12,10 @@ import "github.com/locktivity/epack/componentsdk"
 // The policy and device_access sections are left out. The collector reads
 // how policies are configured, which does not show what they enforce. The
 // policy data is in the detailed artifact.
+//
+// privileged_access counts the administrators whose role can change who
+// has access or how users sign in, which leaves out Read Only and Billing
+// Only.
 type IDPPosture struct {
 	SchemaVersion    string                      `json:"schema_version"`
 	CollectedAt      string                      `json:"collected_at"`
@@ -121,16 +125,16 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 
 	if a := o.Admins; a != nil && !a.Partial {
 		pa := &IDPPosturePrivilegedAccess{
-			PrivilegedUsersPresent: boolPtr(a.TotalAdmins > 0),
-			PrivilegedUsersCount:   atAudit(a.TotalAdmins),
+			PrivilegedUsersPresent: boolPtr(a.privileged > 0),
+			PrivilegedUsersCount:   atAudit(a.privileged),
 			SuperAdminCount:        atAudit(a.SuperAdminCount),
 		}
 		// Only TOTP enrollment is observable. An admin without it may still
-		// use another factor, so coverage is known only when every admin
-		// has TOTP enrolled.
-		if a.TOTPEnrolledCount == a.TotalAdmins {
-			pa.PrivilegedMFAUserCount = atAudit(a.TOTPEnrolledCount)
-			pa.PrivilegedMFACoveragePct = known(componentsdk.Percent(a.TOTPEnrolledCount, a.TotalAdmins, componentsdk.RoundDown))
+		// use another factor, so coverage is known only when every
+		// privileged admin has TOTP enrolled.
+		if a.privilegedTOTP == a.privileged {
+			pa.PrivilegedMFAUserCount = atAudit(a.privilegedTOTP)
+			pa.PrivilegedMFACoveragePct = known(componentsdk.Percent(a.privilegedTOTP, a.privileged, componentsdk.RoundDown))
 		}
 		posture.PrivilegedAccess = pa
 	}
@@ -179,6 +183,10 @@ var idpPostureUnread = []struct {
 	{"/app_security/provisioning_enabled_pct", componentsdk.CodeUnsupported, noProvisioning, false},
 	{"/lifecycle/archived_account_count", componentsdk.CodeUnsupported, noArchivedState, true},
 	{"/lifecycle/archived_pct", componentsdk.CodeUnsupported, noArchivedState, false},
+	{"/policy/legacy_auth_blocked", componentsdk.CodeNotRead, noPolicyEvaluation, false},
+	{"/policy/mfa_required", componentsdk.CodeNotRead, noPolicyEvaluation, false},
+	{"/policy/mfa_required_coverage_pct", componentsdk.CodeNotRead, noPolicyEvaluation, false},
+	{"/policy/mfa_required_user_count", componentsdk.CodeNotRead, noPolicyEvaluation, true},
 	{"/privileged_access/privileged_phishing_resistant_pct", componentsdk.CodeUnsupported, adminFactors, false},
 	{"/privileged_access/privileged_phishing_resistant_user_count", componentsdk.CodeUnsupported, adminFactors, true},
 	{"/privileged_access/standing_privileged_users_count", componentsdk.CodeUnsupported, noStandingAccess, true},
@@ -201,6 +209,7 @@ const (
 	noPasswordPolicyResult = "JumpCloud does not report whether each user's password meets the password policy."
 	noPasswordStrength     = "JumpCloud does not report how strong each user's password is."
 	adminTOTPGap           = "JumpCloud reports only TOTP enrollment for administrators, and at least one administrator has no TOTP enrolled."
+	noPolicyEvaluation     = "JumpCloud's authentication policies are in the detailed artifact, but this collector does not work out which users the enforced policies, together, require MFA of or block on every sign-in, or whether they block legacy authentication."
 )
 
 // recordIDPPostureGaps gives the idp-posture artifact the gaps of the
@@ -218,7 +227,7 @@ func (o *OrgPosture) recordIDPPostureGaps(gaps *gapLog, usersShortfall error, un
 		}
 		gaps.mirror(s.detailed, idp(s.normalized))
 	}
-	if a := o.Admins; a != nil && !a.Partial && a.TOTPEnrolledCount < a.TotalAdmins {
+	if a := o.Admins; a != nil && !a.Partial && a.privilegedTOTP < a.privileged {
 		gaps.unsupported(idp("/privileged_access/privileged_mfa_coverage_pct"), adminTOTPGap)
 		if audit {
 			gaps.unsupported(idp("/privileged_access/privileged_mfa_user_count"), adminTOTPGap)

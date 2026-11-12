@@ -759,6 +759,25 @@ func TestPhishingResistantOnly(t *testing.T) {
 	}
 }
 
+// Every administrator role is privileged but Read Only, which can only
+// read, and Billing Only, which can only manage billing.
+func TestIsPrivileged(t *testing.T) {
+	for role, want := range map[string]bool{
+		"Administrator With Billing":  true,
+		"Administrator":               true,
+		"Manager":                     true,
+		"Command Runner":              true,
+		"Command Runner With Billing": true,
+		"Help Desk":                   true,
+		"Read Only":                   false,
+		"Billing Only":                false,
+	} {
+		if got := isPrivileged(role); got != want {
+			t.Errorf("isPrivileged(%q) = %v, want %v", role, got, want)
+		}
+	}
+}
+
 func TestIsSuperAdmin(t *testing.T) {
 	tests := []struct {
 		role string
@@ -801,6 +820,10 @@ func TestCollect_UnreadValueCodes(t *testing.T) {
 		{idpPosturePath, "/app_security/provisioning_enabled_pct"}:             componentsdk.CodeUnsupported,
 		{idpPosturePath, "/privileged_access/standing_privileged_users_count"}: componentsdk.CodeUnsupported,
 		{idpPosturePath, "/lifecycle/archived_pct"}:                            componentsdk.CodeUnsupported,
+		{idpPosturePath, "/policy/mfa_required"}:                               componentsdk.CodeNotRead,
+		{idpPosturePath, "/policy/mfa_required_user_count"}:                    componentsdk.CodeNotRead,
+		{idpPosturePath, "/policy/mfa_required_coverage_pct"}:                  componentsdk.CodeNotRead,
+		{idpPosturePath, "/policy/legacy_auth_blocked"}:                        componentsdk.CodeNotRead,
 		{endpointPosturePath, "/hardening/screen_lock_compliant_pct"}:          componentsdk.CodeNotRead,
 		{endpointPosturePath, "/compliance/compliant_pct"}:                     componentsdk.CodeNotRead,
 		{endpointPosturePath, "/patching/os_supported_pct"}:                    componentsdk.CodeUnsupported,

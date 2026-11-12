@@ -540,9 +540,24 @@ func computeAdminMetrics(admins []jumpcloud.Administrator, partial bool) *AdminM
 		if isSuperAdmin(a.RoleName) {
 			m.SuperAdminCount++
 		}
+		if isPrivileged(a.RoleName) {
+			m.privileged++
+			if a.TOTPEnrolled {
+				m.privilegedTOTP++
+			}
+		}
 	}
 	m.TOTPEnrolledPct = pct(m.TOTPEnrolledCount, m.TotalAdmins)
 	return m
+}
+
+// isPrivileged reports whether an administrator with roleName can change
+// who has access, reset a user's credentials, or change sign-in settings.
+// Read Only can only read, and Billing Only can only manage billing. Every
+// other role can do one of these, Command Runner included, since its
+// commands run on the organization's devices.
+func isPrivileged(roleName string) bool {
+	return !strings.EqualFold(roleName, "Read Only") && !strings.EqualFold(roleName, "Billing Only")
 }
 
 // isSuperAdmin returns true only for the highest-privilege JumpCloud role.
