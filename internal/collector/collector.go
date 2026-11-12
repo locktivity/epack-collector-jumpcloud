@@ -114,6 +114,9 @@ func (c *Collector) Collect(ctx context.Context, level componentsdk.Level) (*Org
 		if adminShortfall != nil {
 			gaps.partial(serverAdminTotal-len(admins), adminShortfall, detailed("/admins"))
 		}
+		if posture.Admins.noRole > 0 {
+			gaps.partial(posture.Admins.noRole, noRoleError(posture.Admins), detailed("/admins/super_admin_count"))
+		}
 	}
 
 	var policies []jumpcloud.AuthPolicy
@@ -294,6 +297,8 @@ func recordEndpointGaps(gaps *gapLog, ep *EndpointPosture, posture *OrgPosture, 
 	for _, m := range measuredMetrics {
 		if u := ep.unread[m.control]; len(u.devices) > 0 {
 			gaps.partial(len(u.devices), u.first, detailed(m.summary))
+		} else if u := ep.missing[m.control]; len(u.devices) > 0 && ep.discovered() {
+			gaps.partial(len(u.devices), u.first, detailed(m.summary+"/passing_pct"))
 		}
 	}
 
@@ -523,9 +528,12 @@ func computeAuthMetrics(users []jumpcloud.SystemUser) AuthenticationMetrics {
 }
 
 // computeAdminMetrics counts the administrators who are not suspended. A
-// suspended administrator has no Admin Portal or API access.
+// suspended administrator has no Admin Portal or API access. An
+// administrator with no roleName could hold any role, so the super admin
+// count is left out.
 func computeAdminMetrics(admins []jumpcloud.Administrator, partial bool) *AdminMetrics {
 	m := &AdminMetrics{Partial: partial}
+	superAdmins := 0
 	for _, a := range admins {
 		if a.Suspended {
 			continue
@@ -537,8 +545,12 @@ func computeAdminMetrics(admins []jumpcloud.Administrator, partial bool) *AdminM
 		if a.EnableMultiFactor {
 			m.MFARequiredCount++
 		}
+		if a.RoleName == "" {
+			m.noRole++
+			continue
+		}
 		if isSuperAdmin(a.RoleName) {
-			m.SuperAdminCount++
+			superAdmins++
 		}
 		if isPrivileged(a.RoleName) {
 			m.privileged++
@@ -547,8 +559,19 @@ func computeAdminMetrics(admins []jumpcloud.Administrator, partial bool) *AdminM
 			}
 		}
 	}
+	if m.noRole == 0 {
+		m.SuperAdminCount = &superAdmins
+	}
 	m.TOTPEnrolledPct = pct(m.TOTPEnrolledCount, m.TotalAdmins)
 	return m
+}
+
+// noRoleError is the error for the administrators JumpCloud listed with
+// no roleName.
+func noRoleError(m *AdminMetrics) error {
+	return componentsdk.CodeError(componentsdk.CodeInvalidResponse, fmt.Errorf(
+		"%s: no roleName for %d of the %d administrators who are not suspended",
+		jumpcloud.OpListAdministrators, m.noRole, m.TotalAdmins))
 }
 
 // isPrivileged reports whether an administrator with roleName can change

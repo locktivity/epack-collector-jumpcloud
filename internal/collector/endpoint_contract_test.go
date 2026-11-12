@@ -73,6 +73,12 @@ func TestEndpoint_OutputMeetsContract(t *testing.T) {
 			in.serverTotal = 50
 			return in
 		}(),
+		"a field left out": func() endpointInputs {
+			in := mixedFleet(componentsdk.LevelAudit)
+			in.alf = newInsightSource([]jumpcloud.InsightALF{{SystemID: "m1", CollectionTime: recent}}, false,
+				func(r jumpcloud.InsightALF) string { return r.SystemID })
+			return in
+		}(),
 		"denied and capped": func() endpointInputs {
 			in := mixedFleet(componentsdk.LevelInternal)
 			in.products = &insightSource[jumpcloud.InsightWindowsSecurityProduct]{err: &jumpcloud.APIError{StatusCode: 403}}
@@ -226,6 +232,12 @@ func contractProblems(ep *EndpointPosture, level componentsdk.Level) []string {
 		total := cov.PassingDevicesCount + cov.FailingDevicesCount + cov.UnknownDevicesCount + cov.NotApplicableDevicesCount
 		if total != devices {
 			problems = append(problems, fmt.Sprintf("%s: coverage covers %d devices, scope has %d", m.path, total, devices))
+		}
+		if len(ep.missing[m.control].devices) > 0 {
+			if value.Read {
+				problems = append(problems, m.path+": percentage emitted while a device's reading lacks a field")
+			}
+			continue
 		}
 		var want *float64
 		if evaluated := cov.PassingDevicesCount + cov.FailingDevicesCount; evaluated > 0 {

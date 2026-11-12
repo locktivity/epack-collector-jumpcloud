@@ -35,6 +35,11 @@ type EndpointPosture struct {
 	// be read because a System Insights table failed or was cut short. It
 	// is not serialized.
 	unread map[string]unreadControl
+	// missing holds, for each control, the devices whose reading is
+	// unknown because JumpCloud left out a field it needs. They count as
+	// unknown, and the control's percentage is left out. It is not
+	// serialized.
+	missing map[string]unreadControl
 	// noSource holds the metrics no device in the fleet has a reading
 	// source for, with the code of each one's gap. It is not serialized.
 	noSource map[string]componentsdk.Code
@@ -47,6 +52,15 @@ type EndpointPosture struct {
 type unreadControl struct {
 	devices map[string]error
 	first   error
+}
+
+// add returns u with the device's reading left out because of err.
+func (u unreadControl) add(deviceID string, err error) unreadControl {
+	if u.devices == nil {
+		u = unreadControl{devices: map[string]error{}, first: err}
+	}
+	u.devices[deviceID] = err
+	return u
 }
 
 type EndpointScope struct {

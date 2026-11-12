@@ -124,15 +124,22 @@ func (o *OrgPosture) ToIDPPosture() *IDPPosture {
 	}
 
 	if a := o.Admins; a != nil && !a.Partial {
-		pa := &IDPPosturePrivilegedAccess{
-			PrivilegedUsersPresent: boolPtr(a.privileged > 0),
-			PrivilegedUsersCount:   atAudit(a.privileged),
-			SuperAdminCount:        atAudit(a.SuperAdminCount),
+		// An administrator with no role could hold any role, so the values
+		// that depend on roles are left out, with a gap. Another
+		// administrator's privileged role still shows that one is present.
+		pa := &IDPPosturePrivilegedAccess{}
+		switch {
+		case a.noRole == 0:
+			pa.PrivilegedUsersPresent = boolPtr(a.privileged > 0)
+			pa.PrivilegedUsersCount = atAudit(a.privileged)
+			pa.SuperAdminCount = atAudit(*a.SuperAdminCount)
+		case a.privileged > 0:
+			pa.PrivilegedUsersPresent = boolPtr(true)
 		}
 		// Only TOTP enrollment is observable. An admin without it may still
 		// use another factor, so coverage is known only when every
 		// privileged admin has TOTP enrolled.
-		if a.privilegedTOTP == a.privileged {
+		if a.noRole == 0 && a.privilegedTOTP == a.privileged {
 			pa.PrivilegedMFAUserCount = atAudit(a.privilegedTOTP)
 			pa.PrivilegedMFACoveragePct = known(componentsdk.Percent(a.privilegedTOTP, a.privileged, componentsdk.RoundDown))
 		}
@@ -231,6 +238,25 @@ func (o *OrgPosture) recordIDPPostureGaps(gaps *gapLog, usersShortfall error, un
 		gaps.unsupported(idp("/privileged_access/privileged_mfa_coverage_pct"), adminTOTPGap)
 		if audit {
 			gaps.unsupported(idp("/privileged_access/privileged_mfa_user_count"), adminTOTPGap)
+		}
+	}
+	// The detailed super_admin_count's gap carries over through
+	// idpPostureSources. A known privileged administrator still shows that
+	// one is present, and a known one without TOTP already leaves the MFA
+	// values out.
+	if a := o.Admins; a != nil && !a.Partial && a.noRole > 0 {
+		err := noRoleError(a)
+		if a.privileged == 0 {
+			gaps.partial(a.noRole, err, idp("/privileged_access/privileged_users_present"))
+		}
+		if a.privilegedTOTP == a.privileged {
+			gaps.partial(a.noRole, err, idp("/privileged_access/privileged_mfa_coverage_pct"))
+		}
+		if audit {
+			gaps.partial(a.noRole, err, idp("/privileged_access/privileged_users_count"))
+			if a.privilegedTOTP == a.privileged {
+				gaps.partial(a.noRole, err, idp("/privileged_access/privileged_mfa_user_count"))
+			}
 		}
 	}
 	for _, u := range idpPostureUnread {

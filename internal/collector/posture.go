@@ -88,9 +88,10 @@ type AuthenticationMetrics struct {
 // enrollment, and whether MFA is required. Other admin factors (such as
 // WebAuthn) are not exposed, so neither field is total MFA coverage.
 // TOTPEnrolledPct is null when there are no administrators.
+// SuperAdminCount is null when an administrator has no role.
 type AdminMetrics struct {
 	TotalAdmins       int      `json:"total_admins"`
-	SuperAdminCount   int      `json:"super_admin_count"`
+	SuperAdminCount   *int     `json:"super_admin_count"`
 	TOTPEnrolledCount int      `json:"totp_enrolled_count"`
 	TOTPEnrolledPct   *float64 `json:"totp_enrolled_pct"`
 	MFARequiredCount  int      `json:"mfa_required_count"`
@@ -98,8 +99,10 @@ type AdminMetrics struct {
 
 	// privileged counts the administrators whose role can change who has
 	// access or how users sign in, and privilegedTOTP those of them with
-	// TOTP enrolled. The idp-posture artifact counts these.
-	privileged, privilegedTOTP int
+	// TOTP enrolled. The idp-posture artifact counts these. noRole counts
+	// the administrators JumpCloud listed with no roleName, who could hold
+	// any role.
+	privileged, privilegedTOTP, noRole int
 }
 
 // AppMetrics contains SSO application metrics. SSOCoveragePct is null when
