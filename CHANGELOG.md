@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.2.4
+
+- The collector is built on epack v0.12.2.
+
 ## v0.2.3
 
 - When JumpCloud leaves out a field a device's reading needs, the device counts as unknown, and the control's percentage is left out with a `partial` gap whose code is `invalid_response` and whose unmeasured count is those devices. The fields are a system's `lastContact`, `fde` object and `fde.active`, and a System Insights row's `system_id`, `collection_time`, and the columns its control is judged on. This covers the `hardening` and `protection` percentages in `artifacts/jumpcloud.endpoint-posture.json`, and each `passing_pct` under `device_controls` in `artifacts/jumpcloud.details.json`, which is null with the same gap. `metric_coverage` and the detailed device counts still count the device as unknown. The `fde` object is the agent's report, so it counts as left out only on a system with the agent. A system without the agent, such as a phone enrolled only in MDM, still has no disk encryption reading. A reading that JumpCloud's data leaves unknown, such as a stale reading or an unrecognized state, keeps the percentage over the devices that passed or failed, with no gap.
